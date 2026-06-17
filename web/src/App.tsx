@@ -22,10 +22,17 @@ type Status = 'pending' | 'won' | 'lost' | 'push'
 type Sport = 'NFL' | 'NBA' | 'MLB' | 'NHL' | 'CFB' | 'Soccer' | 'MMA' | 'Other'
 type BetType = 'spread' | 'moneyline' | 'over_under' | 'parlay' | 'prop' | 'other'
 
+const REACTION_EMOJIS = ['🔥', '🤡', '👀', '💀', '🎯'] as const
+type ReactionEmoji = typeof REACTION_EMOJIS[number]
+
+interface Reaction { emoji: ReactionEmoji; userIds: string[] }
+interface Comment { id: string; userId: string; text: string; createdAt: Date }
+
 interface Bet {
   id: string; userId: string; sport: Sport; type: BetType
   description: string; odds: number; stake: number; status: Status
   bookmaker: string; createdAt: Date; settledAt?: Date
+  reactions?: Reaction[]; comments?: Comment[]
 }
 
 interface Stats {
@@ -95,6 +102,9 @@ interface Ctx {
   getUserById: (id: string) => User | undefined
   upgradePro: () => void
   signOut: () => void
+  reactToBet: (betId: string, emoji: ReactionEmoji) => void
+  commentOnBet: (betId: string, text: string) => void
+  darkMode: boolean; toggleDark: () => void
 }
 
 const AppCtx = createContext<Ctx>(null as any)
@@ -108,6 +118,11 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   const [bets, setBets] = useState<Bet[]>(SEED_BETS)
   const [groupId, setGroupId] = useState<string | null>(null)
   const [loading, setLoading] = useState(SUPABASE_READY)
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('lockroom-dark') === 'true')
+
+  const toggleDark = useCallback(() => {
+    setDarkMode(prev => { const next = !prev; localStorage.setItem('lockroom-dark', String(next)); return next })
+  }, [])
 
   // Load real data from Supabase on mount
   useEffect(() => {
@@ -183,6 +198,24 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     if (SUPABASE_READY) await updateProfile(me.id, { is_pro: true })
   }, [me.id])
 
+  const reactToBet = useCallback((betId: string, emoji: ReactionEmoji) => {
+    setBets(prev => prev.map(b => {
+      if (b.id !== betId) return b
+      const reactions = b.reactions ? [...b.reactions] : []
+      const existing = reactions.find(r => r.emoji === emoji)
+      if (existing) {
+        const alreadyReacted = existing.userIds.includes(me.id)
+        return { ...b, reactions: reactions.map(r => r.emoji === emoji ? { ...r, userIds: alreadyReacted ? r.userIds.filter(id => id !== me.id) : [...r.userIds, me.id] } : r) }
+      }
+      return { ...b, reactions: [...reactions, { emoji, userIds: [me.id] }] }
+    }))
+  }, [me.id])
+
+  const commentOnBet = useCallback((betId: string, text: string) => {
+    const comment: Comment = { id: `c${Date.now()}`, userId: me.id, text, createdAt: new Date() }
+    setBets(prev => prev.map(b => b.id !== betId ? b : { ...b, comments: [...(b.comments ?? []), comment] }))
+  }, [me.id])
+
   if (loading) return (
     <div style={{ minHeight: '100vh', background: '#F0F5FA', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
       <div style={{ fontSize: 40 }}>🔒</div>
@@ -192,8 +225,10 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   )
 
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode: GROUP_CODE, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut }}>
-      {children}
+    <AppCtx.Provider value={{ me, users, bets, groupCode: GROUP_CODE, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+      <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
+        {children}
+      </div>
     </AppCtx.Provider>
   )
 }
@@ -363,66 +398,146 @@ function Avatar({ name, size = 38 }: { name: string; size?: number }) {
 
 // ─── Shared Components ────────────────────────────────────────────────────────
 function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
-  const { getUserById, settleBet } = useApp()
+  const { me, getUserById, settleBet, reactToBet, commentOnBet } = useApp()
   const user = getUserById(bet.userId)
+  const [showComments, setShowComments] = useState(false)
+  const [commentText, setCommentText] = useState('')
+  const [swipeX, setSwipeX] = useState(0)
+  const [swipeStart, setSwipeStart] = useState<number | null>(null)
   if (!user) return null
   const s = STATUS[bet.status]
   const p = pnl(bet)
+  const reactions = bet.reactions ?? []
+  const comments = bet.comments ?? []
+  const totalReactions = reactions.reduce((sum, r) => sum + r.userIds.length, 0)
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!isMe || bet.status !== 'pending') return
+    setSwipeStart(e.touches[0].clientX)
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (swipeStart === null) return
+    setSwipeX(e.touches[0].clientX - swipeStart)
+  }
+  const handleTouchEnd = () => {
+    if (swipeX > 80) settleBet(bet.id, 'won')
+    else if (swipeX < -80) settleBet(bet.id, 'lost')
+    setSwipeX(0); setSwipeStart(null)
+  }
 
   return (
-    <div style={{ background: C.bgCard, borderRadius: 16, padding: 16, marginBottom: 10, border: `1px solid ${C.border}`, boxShadow: '0 2px 12px rgba(75,156,211,0.06)', borderLeft: `4px solid ${s.color}` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <Avatar name={user.displayName} size={38} />
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{user.displayName}</div>
-            <div style={{ color: C.muted, fontSize: 11 }}>{timeAgo(bet.createdAt)}</div>
+    <div style={{ position: 'relative', marginBottom: 10, overflow: 'hidden', borderRadius: 16 }}>
+      {isMe && bet.status === 'pending' && (
+        <>
+          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '50%', background: C.winBg, display: 'flex', alignItems: 'center', paddingLeft: 20, borderRadius: '16px 0 0 16px' }}>
+            <span style={{ color: C.win, fontWeight: 800, fontSize: 13 }}>✅ Won →</span>
           </div>
-        </div>
-        <span style={{ background: s.bg, color: s.color, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 800 }}>{s.icon} {s.label}</span>
-      </div>
-
-      {(() => {
-        const legs = bet.type === 'parlay'
-          ? bet.description.replace(/^\d+-leg:\s*/i, '').split(' + ')
-          : [bet.description]
-        const isParlay = bet.type === 'parlay'
-        return (
-          <div style={{ marginBottom: 10 }}>
-            {isParlay && <div style={{ fontWeight: 700, fontSize: 13, color: C.muted, marginBottom: 8 }}>{legs.length}-Leg Parlay</div>}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {legs.map((leg, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, background: bet.status === 'won' ? C.winBg : bet.status === 'lost' ? C.lossBg : bet.status === 'push' ? C.pushBg : C.primaryBg, border: `1px solid ${bet.status === 'won' ? C.win : bet.status === 'lost' ? C.loss : bet.status === 'push' ? C.push : C.primary}`, borderRadius: 8, padding: '4px 10px' }}>
-                  <span style={{ color: bet.status === 'won' ? C.win : bet.status === 'lost' ? C.loss : bet.status === 'push' ? C.push : C.primary, fontSize: 12 }}>
-                    {bet.status === 'won' ? '✓' : bet.status === 'lost' ? '✗' : bet.status === 'push' ? '~' : '·'}
-                  </span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{leg}</span>
-                </div>
-              ))}
+          <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '50%', background: C.lossBg, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 20, borderRadius: '0 16px 16px 0' }}>
+            <span style={{ color: C.loss, fontWeight: 800, fontSize: 13 }}>← ❌ Lost</span>
+          </div>
+        </>
+      )}
+      <div
+        onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}
+        style={{ background: C.bgCard, borderRadius: 16, padding: 16, border: `1px solid ${C.border}`, boxShadow: '0 2px 12px rgba(75,156,211,0.06)', borderLeft: `4px solid ${s.color}`, transform: `translateX(${swipeX}px)`, transition: swipeStart === null ? 'transform 0.2s' : 'none', position: 'relative' }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <Avatar name={user.displayName} size={38} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{user.displayName}</div>
+              <div style={{ color: C.muted, fontSize: 11 }}>{timeAgo(bet.createdAt)}</div>
             </div>
           </div>
-        )
-      })()}
-
-      <div style={{ display: 'flex', gap: 16, fontSize: 13, color: C.muted, marginBottom: 8 }}>
-        <span>{bet.sport} · {bet.type.replace('_', '/')}</span>
-        <span>{fmtOdds(bet.odds)}</span>
-        <span>${bet.stake} stake</span>
-        {bet.status !== 'pending' && <span style={{ color: p >= 0 ? C.win : C.loss, fontWeight: 700 }}>{fmtMoney(p)}</span>}
-      </div>
-
-      <div style={{ color: C.textMuted, fontSize: 12 }}>{bet.bookmaker}</div>
-
-      {isMe && bet.status === 'pending' && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          {(['won', 'lost', 'push'] as const).map(s => (
-            <button key={s} onClick={() => settleBet(bet.id, s)} style={{
-              flex: 1, padding: '7px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12,
-              background: STATUS[s].bg, color: STATUS[s].color,
-            }}>{STATUS[s].icon} {STATUS[s].label.charAt(0) + STATUS[s].label.slice(1).toLowerCase()}</button>
-          ))}
+          <span style={{ background: s.bg, color: s.color, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 800 }}>{s.icon} {s.label}</span>
         </div>
-      )}
+
+        {(() => {
+          const legs = bet.type === 'parlay'
+            ? bet.description.replace(/^\d+-leg:\s*/i, '').split(' + ')
+            : [bet.description]
+          const isParlay = bet.type === 'parlay'
+          return (
+            <div style={{ marginBottom: 10 }}>
+              {isParlay && <div style={{ fontWeight: 700, fontSize: 13, color: C.muted, marginBottom: 8 }}>{legs.length}-Leg Parlay</div>}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {legs.map((leg, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, background: bet.status === 'won' ? C.winBg : bet.status === 'lost' ? C.lossBg : bet.status === 'push' ? C.pushBg : C.primaryBg, border: `1px solid ${bet.status === 'won' ? C.win : bet.status === 'lost' ? C.loss : bet.status === 'push' ? C.push : C.primary}`, borderRadius: 8, padding: '4px 10px' }}>
+                    <span style={{ color: bet.status === 'won' ? C.win : bet.status === 'lost' ? C.loss : bet.status === 'push' ? C.push : C.primary, fontSize: 12 }}>
+                      {bet.status === 'won' ? '✓' : bet.status === 'lost' ? '✗' : bet.status === 'push' ? '~' : '·'}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{leg}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
+
+        <div style={{ display: 'flex', gap: 16, fontSize: 13, color: C.muted, marginBottom: 8 }}>
+          <span>{bet.sport} · {bet.type.replace('_', '/')}</span>
+          <span>{fmtOdds(bet.odds)}</span>
+          <span>${bet.stake} stake</span>
+          {bet.status !== 'pending' && <span style={{ color: p >= 0 ? C.win : C.loss, fontWeight: 700 }}>{fmtMoney(p)}</span>}
+        </div>
+
+        <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 10 }}>{bet.bookmaker}</div>
+
+        {/* Reactions row */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+          {REACTION_EMOJIS.map(emoji => {
+            const r = reactions.find(r => r.emoji === emoji)
+            const count = r?.userIds.length ?? 0
+            const mine = r?.userIds.includes(me.id) ?? false
+            return (
+              <button key={emoji} onClick={() => reactToBet(bet.id, emoji)} style={{
+                background: mine ? C.primaryBg : C.bgEl, border: mine ? `1px solid ${C.primary}` : `1px solid ${C.border}`,
+                borderRadius: 99, padding: '3px 9px', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4,
+                color: mine ? C.primary : C.muted, fontWeight: mine ? 700 : 400,
+              }}>
+                {emoji}{count > 0 && <span style={{ fontSize: 11 }}>{count}</span>}
+              </button>
+            )
+          })}
+          <button onClick={() => setShowComments(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 12, marginLeft: 4 }}>
+            💬 {comments.length > 0 ? comments.length : ''}
+          </button>
+        </div>
+
+        {/* Comments */}
+        {showComments && (
+          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10, marginTop: 4 }}>
+            {comments.map(c => {
+              const cu = getUserById(c.userId)
+              return (
+                <div key={c.id} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
+                  <Avatar name={cu?.displayName ?? '?'} size={24} />
+                  <div style={{ background: C.bgEl, borderRadius: 10, padding: '6px 10px', flex: 1 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 2 }}>{cu?.displayName}</div>
+                    <div style={{ fontSize: 13 }}>{c.text}</div>
+                  </div>
+                </div>
+              )
+            })}
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <input value={commentText} onChange={e => setCommentText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && commentText.trim()) { commentOnBet(bet.id, commentText.trim()); setCommentText('') } }} placeholder="Say something..." style={{ flex: 1, borderRadius: 10, border: `1px solid ${C.border}`, padding: '7px 12px', fontSize: 13, background: C.bgEl, color: C.text, outline: 'none' }} />
+              <button onClick={() => { if (commentText.trim()) { commentOnBet(bet.id, commentText.trim()); setCommentText('') } }} style={{ background: C.primary, color: '#fff', border: 'none', borderRadius: 10, padding: '7px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>↑</button>
+            </div>
+          </div>
+        )}
+
+        {isMe && bet.status === 'pending' && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            {(['won', 'lost', 'push'] as const).map(s => (
+              <button key={s} onClick={() => settleBet(bet.id, s)} style={{
+                flex: 1, padding: '7px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12,
+                background: STATUS[s].bg, color: STATUS[s].color,
+              }}>{STATUS[s].icon} {STATUS[s].label.charAt(0) + STATUS[s].label.slice(1).toLowerCase()}</button>
+            ))}
+          </div>
+        )}
+        {isMe && bet.status === 'pending' && <div style={{ textAlign: 'center', fontSize: 11, color: C.muted, marginTop: 6 }}>swipe right = won · swipe left = lost</div>}
+      </div>
     </div>
   )
 }
@@ -1649,8 +1764,15 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, groupCode, settleBet, upgradePro, signOut } = useApp()
+  const { me, bets, groupCode, settleBet, upgradePro, signOut, darkMode, toggleDark } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
+  const [copied, setCopied] = useState(false)
+
+  const shareInvite = () => {
+    const text = `Join my Lockroom betting group! Code: ${groupCode}`
+    if (navigator.share) navigator.share({ title: 'Lockroom Invite', text })
+    else { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+  }
   const myBets = bets.filter(b => b.userId === me.id).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
   const { stats } = me
   const days = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
@@ -1667,19 +1789,41 @@ function ProfilePage() {
           </div>
           <div style={{ color: C.muted, fontSize: 13 }}>@{me.username}</div>
         </div>
-        <button onClick={signOut} style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: 10, padding: '7px 14px', cursor: 'pointer', color: C.muted, fontSize: 13, fontWeight: 600 }}>
-          Sign out
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={toggleDark} style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: 10, padding: '7px 10px', cursor: 'pointer', fontSize: 16 }} title="Toggle dark mode">
+            {darkMode ? '☀️' : '🌙'}
+          </button>
+          <button onClick={signOut} style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: 10, padding: '7px 14px', cursor: 'pointer', color: C.muted, fontSize: 13, fontWeight: 600 }}>
+            Sign out
+          </button>
+        </div>
       </div>
 
-      {/* Citadel group card */}
+      {/* Streak banner */}
+      {(() => {
+        const { streak } = me.stats
+        if (streak.count < 2) return null
+        return (
+          <div style={{ background: streak.type === 'win' ? C.winBg : C.lossBg, border: `1px solid ${streak.type === 'win' ? C.win : C.loss}`, borderRadius: 12, padding: '10px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 22 }}>{streak.type === 'win' ? '🔥' : '🥶'}</span>
+            <div>
+              <div style={{ fontWeight: 800, color: streak.type === 'win' ? C.win : C.loss, fontSize: 14 }}>{streak.count}-{streak.type === 'win' ? 'Win' : 'Loss'} Streak</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{streak.type === 'win' ? "You're on fire 🔥" : "Time to bounce back 💪"}</div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Group card */}
       <div style={{ background: C.bgCard, borderRadius: 12, padding: '12px 16px', marginBottom: 16, border: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <span style={{ fontSize: 16, marginRight: 8 }}>🎰</span>
           <span style={{ fontWeight: 700 }}>Citadel</span>
-          <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>10/15 full</div>
+          <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Code: <span style={{ color: C.primary, fontWeight: 700 }}>{groupCode}</span></div>
         </div>
-        <span style={{ color: C.muted, fontSize: 12 }}>Code: <span style={{ color: C.primary, fontWeight: 700 }}>{groupCode}</span></span>
+        <button onClick={shareInvite} style={{ background: C.primaryBg, border: `1px solid ${C.primary}`, borderRadius: 10, padding: '7px 14px', cursor: 'pointer', color: C.primary, fontSize: 13, fontWeight: 700 }}>
+          {copied ? '✓ Copied!' : '🔗 Invite'}
+        </button>
       </div>
 
       {!me.isPro && (
