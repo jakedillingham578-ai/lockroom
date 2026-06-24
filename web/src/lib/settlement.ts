@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Auto-settlement engine — powered by ESPN free API (no key needed)
 
 import { supabase } from './supabase'

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
-import { GoogleOAuthProvider, useGoogleLogin, GoogleLogin } from '@react-oauth/google'
+import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
 import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchGroupByCode, insertBet, updateBetStatus, updateProfile } from './lib/store'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
@@ -138,12 +138,13 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
         // Find the group
         const group = await fetchGroupByCode(GROUP_CODE)
         if (!group) { setLoading(false); return }
-        setGroupId(group.id)
+        const groupId = (group as any).id
+        setGroupId(groupId)
 
         // Load members and bets in parallel
         const [members, groupBets] = await Promise.all([
-          fetchGroupMembers(group.id),
-          fetchGroupBets(group.id),
+          fetchGroupMembers(groupId),
+          fetchGroupBets(groupId),
         ])
 
         if (members.length > 0) {
@@ -409,7 +410,6 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
   const p = pnl(bet)
   const reactions = bet.reactions ?? []
   const comments = bet.comments ?? []
-  const totalReactions = reactions.reduce((sum, r) => sum + r.userIds.length, 0)
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!isMe || bet.status !== 'pending') return
@@ -750,7 +750,7 @@ const btnStyle: React.CSSProperties = {
 
 // ─── Home / Feed ──────────────────────────────────────────────────────────────
 function HomePage() {
-  const { me, bets, groupCode } = useApp()
+  const { me, bets } = useApp()
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const now = Date.now()
   const periodMs = { weekly: 7 * 864e5, monthly: 30 * 864e5, yearly: 365 * 864e5 }
@@ -826,7 +826,6 @@ function HomePage() {
 }
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
-type SortKey = 'profit' | 'winRate' | 'roi' | 'streak'
 function LeaderboardPage() {
   const { me, users, bets, upgradePro } = useApp()
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
@@ -839,7 +838,7 @@ function LeaderboardPage() {
   const periodBets = bets.filter(b => b.status !== 'pending' && (now - b.createdAt.getTime()) < periodMs[period])
 
   const userStats = useMemo(() => users.map(u => {
-    const ub = periodBets.filter(b => b.userId === u.id).sort((a, b) => a.createdAt - b.createdAt)
+    const ub = periodBets.filter(b => b.userId === u.id).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
     const wins = ub.filter(b => b.status === 'won').length
     const losses = ub.filter(b => b.status === 'lost').length
     const winRate = wins + losses > 0 ? wins / (wins + losses) : 0
@@ -1098,7 +1097,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
     { id: 'h2h', label: '⚔️ H2H' },
   ] as const
 
-  const SectionLabel = ({ children }: { children: string }) => (
+  const SectionLabel = ({ children }: { children: React.ReactNode }) => (
     <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10, marginTop: 20 }}>{children}</div>
   )
 
@@ -1146,7 +1145,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '8px 12px', background: C.bgEl, fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.4 }}>
               <div>Player</div><div style={{ textAlign: 'right' }}>P&L</div><div style={{ textAlign: 'right' }}>ROI</div><div style={{ textAlign: 'right' }}>Odds</div><div style={{ textAlign: 'right' }}>Risked</div>
             </div>
-            {extended.map((u, i) => (
+            {extended.map((u) => (
               <div key={u.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '10px 12px', borderTop: `1px solid ${C.border}`, alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                   <Avatar name={u.displayName} size={22} />
@@ -1519,7 +1518,7 @@ function AddBetPage() {
     else if (type === 'moneyline') finalDesc = [mlTeam, 'ML', mlOpp ? `vs ${mlOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'over_under') finalDesc = [ouMatchup, ouDir, ouTotal].filter(Boolean).join(' ')
     if (!finalDesc || !odds || !stake) return alert('Fill in description, odds, and stake.')
-    addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null })
+    addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book })
     setDone(true)
     setTimeout(() => { setDone(false); nav('/') }, 2000)
   }
@@ -1631,7 +1630,7 @@ function AddBetPage() {
         )}
       </div>
 
-      <ChipRow label="Bet Type" options={BET_TYPES.map(([k, v]) => v)} value={BET_TYPES.find(([k]) => k === type)?.[1] ?? 'Spread'} onChange={v => setType((BET_TYPES.find(([, l]) => l === v)?.[0]) ?? 'spread')} />
+      <ChipRow label="Bet Type" options={BET_TYPES.map(([, v]) => v)} value={BET_TYPES.find(([k]) => k === type)?.[1] ?? 'Spread'} onChange={v => setType((BET_TYPES.find(([, l]) => l === v)?.[0]) ?? 'spread')} />
 
       <div style={{ marginBottom: 16 }}>
         {type === 'spread' && (
@@ -1764,7 +1763,7 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, groupCode, settleBet, upgradePro, signOut, darkMode, toggleDark } = useApp()
+  const { me, bets, groupCode, upgradePro, signOut, darkMode, toggleDark } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
   const [copied, setCopied] = useState(false)
 
@@ -1976,12 +1975,6 @@ function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
       <Slot user={bottom} isWinner={!!winner && winner.id === bottom?.id} hasWinner={!!winner} />
     </div>
   )
-
-  // Heights for layout alignment
-  const byeY = slotH / 2 // center of bye slot
-  const r1MatchY = matchH / 2 // center of r1 match
-  const sf1CenterY = (byeY + r1MatchY) / 2 + 4
-  const totalHeight = matchH + 20 + matchH // r1 match + gap + sf2 match area
 
   return (
     <div>

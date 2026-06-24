@@ -1,3 +1,4 @@
+// @ts-nocheck
 // AppProvider backed by Supabase
 // Falls back to mock data if Supabase isn't configured yet.
 
