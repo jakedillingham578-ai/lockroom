@@ -2657,6 +2657,77 @@ function Layout() {
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
+function WaitlistPage() {
+  const [email, setEmail] = useState('')
+  const [submitted, setSubmitted] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    if (!email || !email.includes('@')) return setError('Enter a valid email.')
+    setLoading(true); setError('')
+    try {
+      if (SUPABASE_READY) {
+        const { supabase: sb } = await import('./lib/supabase')
+        await (sb as any).from('waitlist').insert({ email })
+      }
+      setSubmitted(true)
+    } catch {
+      setError('Something went wrong. Try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#0D1F2D', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+      <div style={{ width: 64, height: 64, borderRadius: 18, background: '#4B9CD3', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+        <span style={{ fontSize: 32 }}>🔒</span>
+      </div>
+      <div style={{ color: '#4B9CD3', fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 8 }}>Coming Soon</div>
+      <div style={{ color: '#fff', fontSize: 36, fontWeight: 900, letterSpacing: -1, marginBottom: 8 }}>Lockroom</div>
+      <div style={{ color: '#5A6A7A', fontSize: 15, textAlign: 'center', lineHeight: 1.6, maxWidth: 300, marginBottom: 36 }}>
+        Your crew's private betting league. Post picks, talk trash, see who's actually sharp.
+      </div>
+
+      {submitted ? (
+        <div style={{ background: 'rgba(22,163,74,0.1)', border: '1px solid #16A34A', borderRadius: 16, padding: '24px 32px', textAlign: 'center', maxWidth: 320, width: '100%' }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>🎯</div>
+          <div style={{ color: '#16A34A', fontSize: 20, fontWeight: 900, marginBottom: 6 }}>You're on the list!</div>
+          <div style={{ color: '#5A6A7A', fontSize: 14 }}>We'll email you the second Lockroom is live.</div>
+        </div>
+      ) : (
+        <div style={{ width: '100%', maxWidth: 360 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <input
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && submit()}
+              placeholder="your@email.com"
+              type="email"
+              style={{ flex: 1, background: '#1a3a52', border: '1px solid #2a4a62', borderRadius: 12, padding: '14px 16px', color: '#fff', fontSize: 15, outline: 'none' }}
+            />
+            <button onClick={submit} disabled={loading} style={{ background: '#4B9CD3', color: '#fff', border: 'none', borderRadius: 12, padding: '14px 20px', fontWeight: 800, fontSize: 15, cursor: 'pointer', opacity: loading ? 0.6 : 1 }}>
+              {loading ? '...' : 'Notify me'}
+            </button>
+          </div>
+          {error && <div style={{ color: '#DC2626', fontSize: 13, textAlign: 'center' }}>{error}</div>}
+          <div style={{ color: '#5A6A7A', fontSize: 12, textAlign: 'center', marginTop: 8 }}>No spam. Just a single email when we launch.</div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 40, width: '100%', maxWidth: 320 }}>
+        {[['📊', 'Live leaderboard for your group'], ['🔥', 'React and comment on every bet'], ['🎯', "Weekly pick'em competitions"], ['🔒', 'Private — just you and your crew']].map(([icon, text]) => (
+          <div key={text} style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#1a3a52', borderRadius: 12, padding: '12px 16px' }}>
+            <span style={{ fontSize: 18 }}>{icon}</span>
+            <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [authed, setAuthed] = useState(false)
   const [sessionChecked, setSessionChecked] = useState(!SUPABASE_READY)
@@ -2692,6 +2763,9 @@ export default function App() {
     }
     setAuthed(false)
   }
+
+  const isWaitlist = window.location.pathname === '/waitlist'
+  if (isWaitlist) return <WaitlistPage />
 
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
