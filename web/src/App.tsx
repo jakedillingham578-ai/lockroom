@@ -195,10 +195,15 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // Reliably get the signed-in user id (getSession refreshes the token if needed).
+  // Reliably get the signed-in user id AND make sure the client has a valid,
+  // attached access token before we do any RLS-protected writes.
   const currentUid = async (sb: any): Promise<string | null> => {
-    const { data: { session } } = await sb.auth.getSession()
-    return session?.user?.id ?? null
+    let { data: { user } } = await sb.auth.getUser()   // validates token w/ server
+    if (!user) {
+      await sb.auth.refreshSession().catch(() => {})
+      ;({ data: { user } } = await sb.auth.getUser())
+    }
+    return user?.id ?? null
   }
 
   const create = async () => {
@@ -237,8 +242,14 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
         if (!uid) throw new Error('Your session expired. Please sign in again.')
         const { data: group, error: err } = await (sb as any).from('groups').select('*').eq('code', joinCode.trim().toUpperCase()).single()
         if (err || !group) throw new Error('Group not found. Check the code.')
-        const { error: memErr } = await (sb as any).from('group_members').upsert({ group_id: group.id, user_id: uid }, { onConflict: 'group_id,user_id', ignoreDuplicates: true })
-        if (memErr) throw memErr
+        const doInsert = () => (sb as any).from('group_members').upsert({ group_id: group.id, user_id: uid }, { onConflict: 'group_id,user_id', ignoreDuplicates: true })
+        let { error: memErr } = await doInsert()
+        if (memErr) {
+          // Token may not have been attached yet — refresh and retry once.
+          await sb.auth.refreshSession().catch(() => {})
+          ;({ error: memErr } = await doInsert())
+          if (memErr) throw new Error('Could not join. Try signing out and back in, then rejoin.')
+        }
         // Confirm the membership actually landed before proceeding.
         const { data: check } = await (sb as any).from('group_members').select('group_id').eq('group_id', group.id).eq('user_id', uid).maybeSingle()
         if (!check) throw new Error('Could not join — please try again.')
