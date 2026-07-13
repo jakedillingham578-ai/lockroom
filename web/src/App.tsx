@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
@@ -339,10 +339,13 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
 
         if (groups.length === 0) { setNeedsGroup(true); return }
 
-        // Resolve the active group: last-used if still a member, else first.
-        const savedId = uid ? localStorage.getItem(`lockroom-active-${uid}`) : null
-        const active = groups.find(g => g.id === savedId) ?? groups[0]
+        // Resolve the active group: server-remembered first, then localStorage,
+        // else the first group. Falls back gracefully if that group is gone.
+        const serverLast = await fetchLastGroup()
+        const localLast = uid ? localStorage.getItem(`lockroom-active-${uid}`) : null
+        const active = groups.find(g => g.id === serverLast) ?? groups.find(g => g.id === localLast) ?? groups[0]
         if (uid) localStorage.setItem(`lockroom-active-${uid}`, active.id)
+        setLastGroup(active.id)
         setGroupId(active.id); setGroupName(active.name); setGroupCode(active.code)
         await loadGroup(active.id)
       } catch (e) {
@@ -389,6 +392,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     setNeedsGroup(false); setAddingGroup(false)
     if (myId) localStorage.setItem(`lockroom-active-${myId}`, id)
     if (SUPABASE_READY) {
+      setLastGroup(id)
       const groups = await fetchMyGroups()
       setMyGroups(groups)
       await loadGroup(id)
@@ -401,7 +405,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     setGroupId(g.id); setGroupName(g.name); setGroupCode(g.code)
     if (myId) localStorage.setItem(`lockroom-active-${myId}`, g.id)
     setBets([]); setUsers([])   // clear stale group data while the new one loads
-    if (SUPABASE_READY) await loadGroup(g.id)
+    if (SUPABASE_READY) { setLastGroup(g.id); await loadGroup(g.id) }
   }, [myGroups, groupId, myId, loadGroup])
 
   const openAddGroup = useCallback(() => setAddingGroup(true), [])
@@ -409,13 +413,16 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   const getUserById = useCallback((id: string) => users.find(u => u.id === id), [users])
 
   const addBet = useCallback(async (b: Omit<Bet, 'id' | 'createdAt'>) => {
-    const local: Bet = { ...b, id: `b${Date.now()}`, createdAt: new Date(), reactions: [], comments: [] }
+    // Always stamp the bet with the real authenticated id — `me.id` can be a
+    // placeholder until members finish loading, which would fail the insert.
+    const withUser = { ...b, userId: myId || b.userId }
+    const local: Bet = { ...withUser, id: `b${Date.now()}`, createdAt: new Date(), reactions: [], comments: [] }
     setBets(prev => [local, ...prev]) // optimistic
-    if (SUPABASE_READY && groupId) {
-      await insertBet(b, groupId)
+    if (SUPABASE_READY && groupId && withUser.userId) {
+      await insertBet(withUser, groupId)
       await loadGroup(groupId) // reconcile with real row + recompute stats
     }
-  }, [groupId, loadGroup])
+  }, [groupId, loadGroup, myId])
 
   const settleBet = useCallback(async (id: string, s: 'won' | 'lost' | 'push') => {
     setBets(prev => prev.map(b => b.id === id ? { ...b, status: s, settledAt: new Date() } : b))

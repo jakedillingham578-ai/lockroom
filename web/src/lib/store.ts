@@ -226,6 +226,21 @@ export async function fetchMyGroups(): Promise<{ id: string; name: string; code:
     .map((g: any) => ({ id: g.id, name: g.name, code: g.code }))
 }
 
+export async function fetchLastGroup(): Promise<string | null> {
+  if (!SUPABASE_READY) return null
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data } = await supabase.from('profiles').select('last_group_id').eq('id', user.id).single()
+  return (data as any)?.last_group_id ?? null
+}
+
+export async function setLastGroup(groupId: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return
+  await supabase.from('profiles').update({ last_group_id: groupId }).eq('id', user.id)
+}
+
 export async function fetchGroupByCode(code: string) {
   if (!SUPABASE_READY) return null
   const { data, error } = await supabase
