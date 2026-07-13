@@ -164,6 +164,12 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  // Reliably get the signed-in user id (getSession refreshes the token if needed).
+  const currentUid = async (sb: any): Promise<string | null> => {
+    const { data: { session } } = await sb.auth.getSession()
+    return session?.user?.id ?? null
+  }
+
   const create = async () => {
     if (!groupName.trim()) return setError('Enter a group name.')
     setLoading(true); setError('')
@@ -171,15 +177,16 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
     try {
       if (SUPABASE_READY) {
         const { supabase: sb } = await import('./lib/supabase')
-        const { data: { user } } = await sb.auth.getUser()
-        const { data, error: err } = await (sb as any).from('groups').insert({ name: groupName.trim(), code, owner_id: user?.id, max_members: 25 }).select().single()
+        const uid = await currentUid(sb)
+        if (!uid) throw new Error('Your session expired. Please sign in again.')
+        const { data, error: err } = await (sb as any).from('groups').insert({ name: groupName.trim(), code, owner_id: uid, max_members: 25 }).select().single()
         if (err) throw err
-        await (sb as any).from('group_members').insert({ group_id: data.id, user_id: user?.id })
-        localStorage.setItem(`lockroom-group-${user?.id}`, JSON.stringify({ id: data.id, name: data.name, code: data.code }))
+        const { error: memErr } = await (sb as any).from('group_members').insert({ group_id: data.id, user_id: uid })
+        if (memErr) throw memErr
+        localStorage.setItem(`lockroom-active-${uid}`, data.id)
         onGroup(data.id, data.name, data.code)
       } else {
         const fakeId = `g${Date.now()}`
-        localStorage.setItem(`lockroom-group-anon`, JSON.stringify({ id: fakeId, name: groupName.trim(), code }))
         onGroup(fakeId, groupName.trim(), code)
       }
     } catch (e: any) {
@@ -195,11 +202,16 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
     try {
       if (SUPABASE_READY) {
         const { supabase: sb } = await import('./lib/supabase')
-        const { data: { user } } = await sb.auth.getUser()
+        const uid = await currentUid(sb)
+        if (!uid) throw new Error('Your session expired. Please sign in again.')
         const { data: group, error: err } = await (sb as any).from('groups').select('*').eq('code', joinCode.trim().toUpperCase()).single()
         if (err || !group) throw new Error('Group not found. Check the code.')
-        await (sb as any).from('group_members').upsert({ group_id: group.id, user_id: user?.id })
-        localStorage.setItem(`lockroom-group-${user?.id}`, JSON.stringify({ id: group.id, name: group.name, code: group.code }))
+        const { error: memErr } = await (sb as any).from('group_members').upsert({ group_id: group.id, user_id: uid }, { onConflict: 'group_id,user_id', ignoreDuplicates: true })
+        if (memErr) throw memErr
+        // Confirm the membership actually landed before proceeding.
+        const { data: check } = await (sb as any).from('group_members').select('group_id').eq('group_id', group.id).eq('user_id', uid).maybeSingle()
+        if (!check) throw new Error('Could not join — please try again.')
+        localStorage.setItem(`lockroom-active-${uid}`, group.id)
         onGroup(group.id, group.name, group.code)
       } else {
         setError('Join requires a live connection.')
@@ -289,7 +301,8 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   const loadGroup = useCallback(async (gId: string) => {
     try {
       const { supabase: sb } = await import('./lib/supabase')
-      const { data: { user: authUser } } = await sb.auth.getUser()
+      const { data: { session } } = await sb.auth.getSession()
+      const authUser = session?.user
       const [members, groupBets] = await Promise.all([
         fetchGroupMembers(gId),
         fetchGroupBets(gId),
@@ -331,8 +344,8 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     async function load() {
       try {
         const { supabase: sb } = await import('./lib/supabase')
-        const { data: { user: authUser } } = await sb.auth.getUser()
-        const uid = authUser?.id
+        const { data: { session } } = await sb.auth.getSession()
+        const uid = session?.user?.id
         if (uid) setMyId(uid)
 
         const groups = await fetchMyGroups()

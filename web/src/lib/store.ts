@@ -213,12 +213,13 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
 
 export async function fetchMyGroups(): Promise<{ id: string; name: string; code: string }[]> {
   if (!SUPABASE_READY) return []
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return []
+  const { data: { session } } = await supabase.auth.getSession()
+  const uid = session?.user?.id
+  if (!uid) return []
   const { data, error } = await supabase
     .from('group_members')
     .select('groups(*)')
-    .eq('user_id', user.id)
+    .eq('user_id', uid)
   if (error) { console.error('[store] fetchMyGroups:', error.message); return [] }
   return (data ?? [])
     .map((r: any) => r.groups)
@@ -239,17 +240,19 @@ export async function leaveGroupMembership(groupId: string, userId: string): Pro
 
 export async function fetchLastGroup(): Promise<string | null> {
   if (!SUPABASE_READY) return null
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return null
-  const { data } = await supabase.from('profiles').select('last_group_id').eq('id', user.id).single()
+  const { data: { session } } = await supabase.auth.getSession()
+  const uid = session?.user?.id
+  if (!uid) return null
+  const { data } = await supabase.from('profiles').select('last_group_id').eq('id', uid).single()
   return (data as any)?.last_group_id ?? null
 }
 
 export async function setLastGroup(groupId: string): Promise<void> {
   if (!SUPABASE_READY) return
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
-  await supabase.from('profiles').update({ last_group_id: groupId }).eq('id', user.id)
+  const { data: { session } } = await supabase.auth.getSession()
+  const uid = session?.user?.id
+  if (!uid) return
+  await supabase.from('profiles').update({ last_group_id: groupId }).eq('id', uid)
 }
 
 export async function fetchGroupByCode(code: string) {
