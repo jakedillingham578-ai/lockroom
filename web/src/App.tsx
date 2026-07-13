@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
@@ -139,6 +139,7 @@ interface Ctx {
   myGroups: { id: string; name: string; code: string }[]
   switchGroup: (id: string) => void
   openAddGroup: () => void
+  leaveGroup: () => Promise<void>
   addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => void
   settleBet: (id: string, s: 'won' | 'lost' | 'push') => void
   getUserById: (id: string) => User | undefined
@@ -410,6 +411,24 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
 
   const openAddGroup = useCallback(() => setAddingGroup(true), [])
 
+  const leaveGroup = useCallback(async () => {
+    if (!groupId || !myId) return
+    const leavingId = groupId
+    if (SUPABASE_READY) await leaveGroupMembership(leavingId, myId)
+    const remaining = myGroups.filter(g => g.id !== leavingId)
+    setMyGroups(remaining)
+    setBets([]); setUsers([])
+    if (remaining.length > 0) {
+      const next = remaining[0]
+      setGroupId(next.id); setGroupName(next.name); setGroupCode(next.code)
+      localStorage.setItem(`lockroom-active-${myId}`, next.id)
+      if (SUPABASE_READY) { setLastGroup(next.id); await loadGroup(next.id) }
+    } else {
+      setGroupId(null); setGroupCode(''); setGroupName('My Group')
+      setNeedsGroup(true)
+    }
+  }, [groupId, myId, myGroups, loadGroup])
+
   const getUserById = useCallback((id: string) => users.find(u => u.id === id), [users])
 
   const addBet = useCallback(async (b: Omit<Bet, 'id' | 'createdAt'>) => {
@@ -470,7 +489,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   if (addingGroup) return <GroupSetupPage onGroup={handleGroupReady} onCancel={() => setAddingGroup(false)} />
 
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, leaveGroup, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
         {children}
       </div>
@@ -2112,9 +2131,17 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, groupCode, groupName, upgradePro, signOut, darkMode, toggleDark } = useApp()
+  const { me, bets, groupCode, groupName, upgradePro, signOut, darkMode, toggleDark, leaveGroup } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
   const [copied, setCopied] = useState(false)
+  const [confirmLeave, setConfirmLeave] = useState(false)
+  const [leaving, setLeaving] = useState(false)
+
+  const doLeave = async () => {
+    setLeaving(true)
+    await leaveGroup()
+    setLeaving(false); setConfirmLeave(false)
+  }
 
   const shareInvite = () => {
     const text = `Join my Lockroom betting group! Code: ${groupCode}`
@@ -2173,6 +2200,22 @@ function ProfilePage() {
           {copied ? '✓ Copied!' : '🔗 Invite'}
         </button>
       </div>
+
+      {/* Leave group */}
+      {!confirmLeave ? (
+        <button onClick={() => setConfirmLeave(true)} style={{ width: '100%', background: 'none', border: `1px solid ${C.border}`, borderRadius: 12, padding: '11px', marginBottom: 16, cursor: 'pointer', color: C.loss, fontSize: 13, fontWeight: 700 }}>
+          Leave {groupName}
+        </button>
+      ) : (
+        <div style={{ background: C.lossBg, border: `1px solid ${C.loss}`, borderRadius: 12, padding: '14px', marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 4 }}>Leave {groupName}?</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>You'll stop seeing this group's bets. You can rejoin anytime with the code <span style={{ fontWeight: 700, color: C.primary }}>{groupCode}</span>.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={doLeave} disabled={leaving} style={{ flex: 1, background: C.loss, color: '#fff', border: 'none', borderRadius: 10, padding: '10px', fontWeight: 800, fontSize: 13, cursor: 'pointer', opacity: leaving ? 0.6 : 1 }}>{leaving ? 'Leaving…' : 'Yes, leave'}</button>
+            <button onClick={() => setConfirmLeave(false)} style={{ flex: 1, background: C.bgEl, color: C.text, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {!me.isPro && (
         <button onClick={upgradePro} style={{ width: '100%', background: C.goldBg, border: `1px solid ${C.gold}`, borderRadius: 14, padding: '12px 16px', marginBottom: 20, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: C.text }}>

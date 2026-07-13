@@ -226,6 +226,17 @@ export async function fetchMyGroups(): Promise<{ id: string; name: string; code:
     .map((g: any) => ({ id: g.id, name: g.name, code: g.code }))
 }
 
+export async function leaveGroupMembership(groupId: string, userId: string): Promise<boolean> {
+  if (!SUPABASE_READY) return false
+  const { error } = await supabase
+    .from('group_members')
+    .delete()
+    .eq('group_id', groupId)
+    .eq('user_id', userId)
+  if (error) { console.error('[store] leaveGroupMembership:', error.message); return false }
+  return true
+}
+
 export async function fetchLastGroup(): Promise<string | null> {
   if (!SUPABASE_READY) return null
   const { data: { user } } = await supabase.auth.getUser()
