@@ -153,6 +153,25 @@ export async function upsertPickemPick(groupId: string, userId: string, gameId: 
   if (error) console.error('[store] upsertPickemPick:', error.message)
 }
 
+// ── Survivor ─────────────────────────────────────────────────
+export async function fetchSurvivorPicks(groupId: string): Promise<{ day: string; gameId: string; userId: string; pick: string }[]> {
+  if (!SUPABASE_READY) return []
+  const { data, error } = await supabase
+    .from('survivor_picks')
+    .select('*')
+    .eq('group_id', groupId)
+  if (error) { console.error('[store] fetchSurvivorPicks:', error.message); return [] }
+  return (data ?? []).map((r: any) => ({ day: r.day, gameId: r.game_id, userId: r.user_id, pick: r.pick }))
+}
+
+export async function upsertSurvivorPick(groupId: string, userId: string, day: string, gameId: string, pick: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  const { error } = await supabase
+    .from('survivor_picks')
+    .upsert({ group_id: groupId, user_id: userId, day, game_id: gameId, pick }, { onConflict: 'group_id,user_id,day' })
+  if (error) console.error('[store] upsertSurvivorPick:', error.message)
+}
+
 // ── Realtime ─────────────────────────────────────────────────
 // Fires onChange whenever bets/reactions/comments/picks change. Returns an unsubscribe fn.
 export function subscribeToGroup(groupId: string, onChange: () => void): () => void {
@@ -163,6 +182,7 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_reactions' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_comments' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pickem_picks', filter: `group_id=eq.${groupId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'survivor_picks', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members', filter: `group_id=eq.${groupId}` }, onChange)
     .subscribe()
   return () => { supabase.removeChannel(channel) }

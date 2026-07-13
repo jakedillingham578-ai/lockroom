@@ -120,6 +120,24 @@ export async function fetchPickemGames(): Promise<ESPNGame[]> {
   return [...recent, ...upcoming].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 }
 
+// Games for Survivor: a week's worth across sports, capped per sport per
+// day so slates stay pickable. Includes completed games for grading.
+export async function fetchSurvivorGames(): Promise<ESPNGame[]> {
+  const all = await fetchAllScoreboards(dateRange(2, 7))
+  const seen = new Set<string>()
+  const uniq = all.filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)))
+  const dayOf = (iso: string) => new Date(iso).toLocaleDateString('en-CA')
+  const capCount: Record<string, number> = {}
+  const CAP = 4
+  return uniq
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .filter(g => {
+      const key = g.sport + dayOf(g.date)
+      capCount[key] = (capCount[key] ?? 0) + 1
+      return capCount[key] <= CAP
+    })
+}
+
 // Winner of a completed game, or 'DRAW', or null if not final.
 export function gameWinner(g: ESPNGame): string | null {
   if (!g.completed || g.homeScore == null || g.awayScore == null) return null

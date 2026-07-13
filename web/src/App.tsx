@@ -2441,54 +2441,165 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
 }
 
 function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) {
-  const { groupName } = useApp()
-  const [pick, setPick] = useState('')
-  const teams = ['Chiefs', 'Eagles', 'Ravens', 'Bills', 'Cowboys', 'Dolphins', 'Lions', 'Niners']
-  // Everyone starts alive; eliminations happen once picks are graded.
-  const eliminated: User[] = []
-  const alive = users
+  const { groupName, me, groupId } = useApp()
+  type SGame = import('./lib/odds').ESPNGame
+  const [games, setGames] = useState<SGame[]>([])
+  const [allPicks, setAllPicks] = useState<{ day: string; gameId: string; userId: string; pick: string }[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    try {
+      const [odds, store] = await Promise.all([import('./lib/odds'), import('./lib/store')])
+      const g = await odds.fetchSurvivorGames()
+      const picks = groupId ? await store.fetchSurvivorPicks(groupId) : []
+      setGames(g)
+      setAllPicks(picks)
+    } catch (e) {
+      console.warn('[survivor] load failed', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [groupId])
+
+  useEffect(() => { load() }, [load])
+
+  const dayKey = (iso: string) => new Date(iso).toLocaleDateString('en-CA')
+  const dayLabel = (key: string) => new Date(key + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+  const winnerOf = (g: SGame): string | null => {
+    if (!g.completed || g.homeScore == null || g.awayScore == null) return null
+    if (g.homeScore === g.awayScore) return 'DRAW'
+    return g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam
+  }
+
+  // Group games by day
+  const byDay: Record<string, SGame[]> = {}
+  for (const g of games) { const k = dayKey(g.date); (byDay[k] ??= []).push(g) }
+  const days = Object.keys(byDay).sort()
+
+  // My picks + teams I've already used (can't reuse across days)
+  const myPickByDay: Record<string, { gameId: string; pick: string }> = {}
+  allPicks.filter(p => p.userId === me.id).forEach(p => { myPickByDay[p.day] = { gameId: p.gameId, pick: p.pick } })
+  const myUsedTeams = new Set(Object.values(myPickByDay).map(p => p.pick))
+
+  // Alive/eliminated status: walk each user's picks in day order; a completed
+  // pick that didn't win (loss OR draw) knocks them out.
+  const statusOf = (uid: string): { alive: boolean; outDay?: string } => {
+    const picks = allPicks.filter(p => p.userId === uid).sort((a, b) => a.day.localeCompare(b.day))
+    for (const p of picks) {
+      const g = games.find(x => x.id === p.gameId)
+      if (g && g.completed) {
+        const w = winnerOf(g)
+        if (w !== p.pick) return { alive: false, outDay: p.day }
+      }
+    }
+    return { alive: true }
+  }
+
+  const roster = users.map(u => ({ user: u, ...statusOf(u.id) }))
+  const aliveList = roster.filter(r => r.alive)
+  const outList = roster.filter(r => !r.alive)
+  const amAlive = statusOf(me.id).alive
+
+  const makePick = async (day: string, g: SGame, team: string) => {
+    if (!amAlive || g.completed || g.inProgress) return
+    if (myUsedTeams.has(team) && myPickByDay[day]?.pick !== team) return // no reusing a team
+    setAllPicks(prev => [...prev.filter(p => !(p.userId === me.id && p.day === day)), { day, gameId: g.id, userId: me.id, pick: team }])
+    if (groupId) {
+      const { upsertSurvivorPick } = await import('./lib/store')
+      await upsertSurvivorPick(groupId, me.id, day, g.id, team)
+    }
+  }
 
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Survivor Pool</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>{groupName} · Week 14 · Pick one team to win</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>{groupName} · One team per day · Must win or you're out · No reusing teams</p>
+
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
         <div style={{ flex: 1, background: C.winBg, border: `1px solid ${C.win}`, borderRadius: 12, padding: '12px', textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 900, color: C.win }}>{alive.length}</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: C.win }}>{aliveList.length}</div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Still alive</div>
         </div>
         <div style={{ flex: 1, background: C.lossBg, border: `1px solid ${C.loss}`, borderRadius: 12, padding: '12px', textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 900, color: C.loss }}>{eliminated.length}</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: C.loss }}>{outList.length}</div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Eliminated</div>
         </div>
       </div>
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Your pick this week</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
-        {teams.map(t => (
-          <button key={t} onClick={() => setPick(t)} style={{
-            padding: '8px 16px', borderRadius: 99, border: `1px solid ${pick === t ? C.primary : C.border}`,
-            background: pick === t ? C.primaryBg : C.bgCard, color: pick === t ? C.primary : C.muted,
-            cursor: 'pointer', fontWeight: 600, fontSize: 13,
-          }}>{t}</button>
-        ))}
-      </div>
-      <button onClick={() => pick && alert(`${pick} locked in!`)} style={{ ...btnStyle, width: '100%', padding: '13px 0', marginBottom: 24, opacity: pick ? 1 : 0.4 }}>
-        {pick ? `Lock in ${pick} →` : 'Select a team'}
-      </button>
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Who's still in</div>
-      {alive.map(u => (
-        <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '10px 14px', marginBottom: 8 }}>
-          <Avatar name={u.displayName} size={30} />
-          <div style={{ flex: 1, fontWeight: 600 }}>{u.displayName}</div>
-          <span style={{ color: C.win, fontWeight: 700, fontSize: 12 }}>ALIVE ✓</span>
+
+      {!amAlive && (
+        <div style={{ background: C.lossBg, border: `1px solid ${C.loss}`, borderRadius: 12, padding: '12px 14px', marginBottom: 20, color: C.loss, fontWeight: 700, fontSize: 13, textAlign: 'center' }}>
+          💀 You've been eliminated. Better luck next pool.
         </div>
-      ))}
-      {eliminated.map(u => (
-        <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '10px 14px', marginBottom: 8, opacity: 0.5 }}>
+      )}
+
+      {loading && <div style={{ textAlign: 'center', color: C.muted, padding: '30px 0' }}>Loading games…</div>}
+      {!loading && days.length === 0 && (
+        <div style={{ textAlign: 'center', color: C.muted, padding: '30px 16px', background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14 }}>
+          No games scheduled in the next few days.
+        </div>
+      )}
+
+      {/* Days */}
+      {days.map(day => {
+        const myPick = myPickByDay[day]
+        return (
+          <div key={day} style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{dayLabel(day)}</div>
+              {myPick && <div style={{ fontSize: 11, fontWeight: 700, color: C.primary }}>Your pick: {myPick.pick}</div>}
+            </div>
+            {byDay[day].map(g => {
+              const w = winnerOf(g)
+              const locked = g.completed || g.inProgress
+              return (
+                <div key={g.id} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 6, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 13, width: 20, textAlign: 'center' }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
+                  {[g.awayTeam, g.homeTeam].map(team => {
+                    const isPicked = myPick?.pick === team
+                    const isWinner = g.completed && w === team
+                    const usedElsewhere = myUsedTeams.has(team) && myPick?.pick !== team
+                    const disabled = locked || !amAlive || usedElsewhere
+                    return (
+                      <button key={team} onClick={() => makePick(day, g, team)} disabled={disabled} style={{
+                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '8px 6px', borderRadius: 9,
+                        border: `1.5px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
+                        background: isWinner ? C.winBg : isPicked ? C.primaryBg : C.bgEl,
+                        cursor: disabled ? 'default' : 'pointer',
+                        opacity: usedElsewhere ? 0.35 : 1,
+                      }}>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: isWinner ? C.win : isPicked ? C.primary : C.text }}>{team}</span>
+                        {g.completed && <span style={{ fontSize: 11, color: C.muted }}>{team === g.homeTeam ? g.homeScore : g.awayScore}</span>}
+                        {usedElsewhere && <span style={{ fontSize: 9, color: C.muted }}>used</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            })}
+            {/* Result for my pick this day */}
+            {myPick && (() => {
+              const g = games.find(x => x.id === myPick.gameId)
+              if (!g || !g.completed) return null
+              const w = winnerOf(g)
+              const survived = w === myPick.pick
+              return (
+                <div style={{ fontSize: 11, fontWeight: 700, color: survived ? C.win : C.loss, padding: '2px 2px' }}>
+                  {survived ? `✓ ${myPick.pick} won — you survived` : `✗ ${myPick.pick} didn't win — eliminated`}
+                </div>
+              )
+            })()}
+          </div>
+        )
+      })}
+
+      {/* Roster */}
+      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10, marginTop: 8 }}>Pool</div>
+      {[...aliveList, ...outList].map(({ user: u, alive }) => (
+        <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '10px 14px', marginBottom: 8, opacity: alive ? 1 : 0.5 }}>
           <Avatar name={u.displayName} size={30} />
-          <div style={{ flex: 1, fontWeight: 600 }}>{u.displayName}</div>
-          <span style={{ color: C.loss, fontWeight: 700, fontSize: 12 }}>ELIMINATED ✗</span>
+          <div style={{ flex: 1, fontWeight: 600 }}>{u.displayName}{u.id === me.id ? ' (you)' : ''}</div>
+          <span style={{ color: alive ? C.win : C.loss, fontWeight: 700, fontSize: 12 }}>{alive ? 'ALIVE ✓' : 'OUT ✗'}</span>
         </div>
       ))}
     </div>
