@@ -410,17 +410,24 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
         const { supabase: sb } = await import('./lib/supabase')
         const { data: { session } } = await sb.auth.getSession()
         const uid = session?.user?.id
-        if (uid) setMyId(uid)
+        if (!uid) { onSignOut(); return }
+        setMyId(uid)
 
         // Make sure a profile exists and the user has set their name first.
         const prof = await ensureMyProfile()
-        if (prof && !prof.nameConfirmed) {
+        if (!prof) {
+          // Session points at a user that no longer exists (e.g. account deleted).
+          // Sign out for a clean re-auth instead of leaving a broken state.
+          onSignOut()
+          return
+        }
+        if (!prof.nameConfirmed) {
           setSuggestedName(prof.displayName || '')
           setNeedsName(true)
           return
         }
 
-        if (uid) await resolveGroups(uid)
+        await resolveGroups(uid)
       } catch (e) {
         console.warn('[AppProvider] Supabase load failed:', e)
         setNeedsGroup(true)
@@ -3439,15 +3446,17 @@ export default function App() {
   if (isWaitlist) return <WaitlistPage />
 
   return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      {!authed
-        ? <AuthPage onAuth={handleAuth} />
-        : <AppProvider onSignOut={handleSignOut}>
-            <BrowserRouter>
-              <Layout />
-            </BrowserRouter>
-          </AppProvider>
-      }
-    </GoogleOAuthProvider>
+    <ErrorBoundary>
+      <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+        {!authed
+          ? <AuthPage onAuth={handleAuth} />
+          : <AppProvider onSignOut={handleSignOut}>
+              <BrowserRouter>
+                <Layout />
+              </BrowserRouter>
+            </AppProvider>
+        }
+      </GoogleOAuthProvider>
+    </ErrorBoundary>
   )
 }
