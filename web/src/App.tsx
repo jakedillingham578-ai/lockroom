@@ -2283,13 +2283,8 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
   const submitted = madeCount === games.length
   const pct = Math.round((madeCount / games.length) * 100)
 
-  const leaderboard = [
-    { user: users[1], correct: 4 },
-    { user: users[0], correct: 3 },
-    { user: users[3], correct: 3 },
-    { user: users[2], correct: 2 },
-    { user: users[4], correct: 1 },
-  ]
+  // Standings built from the real group members (0 correct until games are graded)
+  const leaderboard = users.map(u => ({ user: u, correct: 0 }))
 
   return (
     <div>
@@ -2404,8 +2399,9 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
   const { groupName } = useApp()
   const [pick, setPick] = useState('')
   const teams = ['Chiefs', 'Eagles', 'Ravens', 'Bills', 'Cowboys', 'Dolphins', 'Lions', 'Niners']
-  const eliminated = [users[2], users[4]]
-  const alive = users.filter(u => !eliminated.find(e => e.id === u.id))
+  // Everyone starts alive; eliminations happen once picks are graded.
+  const eliminated: User[] = []
+  const alive = users
 
   return (
     <div>
