@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
@@ -136,6 +136,9 @@ const SEED_BETS: Bet[] = [
 // ─── Context ──────────────────────────────────────────────────────────────────
 interface Ctx {
   me: User; users: User[]; bets: Bet[]; groupCode: string; groupName: string; groupId: string | null
+  myGroups: { id: string; name: string; code: string }[]
+  switchGroup: (id: string) => void
+  openAddGroup: () => void
   addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => void
   settleBet: (id: string, s: 'won' | 'lost' | 'push') => void
   getUserById: (id: string) => User | undefined
@@ -153,7 +156,7 @@ function generateCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase()
 }
 
-function GroupSetupPage({ onGroup }: { onGroup: (id: string, name: string, code: string) => void }) {
+function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: string, code: string) => void; onCancel?: () => void }) {
   const [mode, setMode] = useState<'choose' | 'create' | 'join'>('choose')
   const [groupName, setGroupName] = useState('')
   const [joinCode, setJoinCode] = useState('')
@@ -227,6 +230,7 @@ function GroupSetupPage({ onGroup }: { onGroup: (id: string, name: string, code:
         <div style={s.sub}>Create a private group for your crew or join one with a code.</div>
         <button style={s.btn} onClick={() => setMode('create')}>➕ Create a group</button>
         <button style={s.ghost} onClick={() => setMode('join')}>🔑 Join with a code</button>
+        {onCancel && <button style={{ ...s.ghost, border: 'none', marginTop: 10, color: '#5a7a90' }} onClick={onCancel}>← Back to app</button>}
       </div>
     </div>
   )
@@ -270,6 +274,8 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   const [groupCode, setGroupCode] = useState('')
   const [loading, setLoading] = useState(SUPABASE_READY)
   const [needsGroup, setNeedsGroup] = useState(false)
+  const [addingGroup, setAddingGroup] = useState(false)
+  const [myGroups, setMyGroups] = useState<{ id: string; name: string; code: string }[]>([])
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('lockroom-dark') === 'true')
 
   const me = useMemo(() => users.find(u => u.id === myId) ?? users[0] ?? PLACEHOLDER_USER, [users, myId])
@@ -327,14 +333,18 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
         const { data: { user: authUser } } = await sb.auth.getUser()
         const uid = authUser?.id
         if (uid) setMyId(uid)
-        const saved = uid ? localStorage.getItem(`lockroom-group-${uid}`) : null
-        if (saved) {
-          const { id, name, code } = JSON.parse(saved)
-          setGroupId(id); setGroupName(name); setGroupCode(code)
-          await loadGroup(id)
-        } else {
-          setNeedsGroup(true)
-        }
+
+        const groups = await fetchMyGroups()
+        setMyGroups(groups)
+
+        if (groups.length === 0) { setNeedsGroup(true); return }
+
+        // Resolve the active group: last-used if still a member, else first.
+        const savedId = uid ? localStorage.getItem(`lockroom-active-${uid}`) : null
+        const active = groups.find(g => g.id === savedId) ?? groups[0]
+        if (uid) localStorage.setItem(`lockroom-active-${uid}`, active.id)
+        setGroupId(active.id); setGroupName(active.name); setGroupCode(active.code)
+        await loadGroup(active.id)
       } catch (e) {
         console.warn('[AppProvider] Supabase load failed:', e)
         setNeedsGroup(true)
@@ -376,9 +386,25 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
 
   const handleGroupReady = useCallback(async (id: string, name: string, code: string) => {
     setGroupId(id); setGroupName(name); setGroupCode(code)
-    setNeedsGroup(false)
-    if (SUPABASE_READY) await loadGroup(id)
-  }, [loadGroup])
+    setNeedsGroup(false); setAddingGroup(false)
+    if (myId) localStorage.setItem(`lockroom-active-${myId}`, id)
+    if (SUPABASE_READY) {
+      const groups = await fetchMyGroups()
+      setMyGroups(groups)
+      await loadGroup(id)
+    }
+  }, [loadGroup, myId])
+
+  const switchGroup = useCallback(async (id: string) => {
+    const g = myGroups.find(x => x.id === id)
+    if (!g || id === groupId) return
+    setGroupId(g.id); setGroupName(g.name); setGroupCode(g.code)
+    if (myId) localStorage.setItem(`lockroom-active-${myId}`, g.id)
+    setBets([]); setUsers([])   // clear stale group data while the new one loads
+    if (SUPABASE_READY) await loadGroup(g.id)
+  }, [myGroups, groupId, myId, loadGroup])
+
+  const openAddGroup = useCallback(() => setAddingGroup(true), [])
 
   const getUserById = useCallback((id: string) => users.find(u => u.id === id), [users])
 
@@ -434,9 +460,10 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   )
 
   if (needsGroup) return <GroupSetupPage onGroup={handleGroupReady} />
+  if (addingGroup) return <GroupSetupPage onGroup={handleGroupReady} onCancel={() => setAddingGroup(false)} />
 
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
         {children}
       </div>
@@ -959,8 +986,44 @@ const btnStyle: React.CSSProperties = {
 }
 
 // ─── Home / Feed ──────────────────────────────────────────────────────────────
+function GroupSwitcher({ onClose }: { onClose: () => void }) {
+  const { myGroups, groupId, switchGroup, openAddGroup } = useApp()
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 200 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.bgCard, borderRadius: '20px 20px 0 0', padding: '20px', width: '100%', maxWidth: 480, maxHeight: '75vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <span style={{ fontSize: 18, fontWeight: 900, color: C.text }}>Your Groups</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, color: C.muted, cursor: 'pointer' }}>✕</button>
+        </div>
+        {myGroups.map(g => {
+          const active = g.id === groupId
+          return (
+            <button key={g.id} onClick={() => { switchGroup(g.id); onClose() }} style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left',
+              background: active ? C.primaryBg : C.bgEl, border: `1.5px solid ${active ? C.primary : C.border}`,
+              borderRadius: 12, padding: '12px 14px', marginBottom: 8, cursor: 'pointer',
+            }}>
+              <span style={{ fontSize: 20 }}>🎰</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>{g.name}</div>
+                <div style={{ fontSize: 12, color: C.muted }}>Code: <span style={{ color: C.primary, fontWeight: 700 }}>{g.code}</span></div>
+              </div>
+              {active && <span style={{ color: C.primary, fontWeight: 800, fontSize: 13 }}>✓ Active</span>}
+            </button>
+          )
+        })}
+        <button onClick={() => { openAddGroup(); onClose() }} style={{
+          width: '100%', background: 'none', border: `1.5px dashed ${C.borderL}`, borderRadius: 12,
+          padding: '14px', marginTop: 4, cursor: 'pointer', color: C.primary, fontWeight: 800, fontSize: 14,
+        }}>➕ Create or join another group</button>
+      </div>
+    </div>
+  )
+}
+
 function HomePage() {
   const { me, bets, groupName } = useApp()
+  const [switcherOpen, setSwitcherOpen] = useState(false)
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const now = Date.now()
   const periodMs = { weekly: 7 * 864e5, monthly: 30 * 864e5, yearly: 365 * 864e5 }
@@ -979,6 +1042,7 @@ function HomePage() {
   }
   return (
     <div>
+      {switcherOpen && <GroupSwitcher onClose={() => setSwitcherOpen(false)} />}
       <div style={{ background: 'rgba(75,156,211,0.15)', backdropFilter: 'blur(12px)', borderRadius: 20, padding: '20px 20px 16px', marginBottom: 16, color: C.text, border: `1px solid rgba(75,156,211,0.3)`, boxShadow: '0 4px 20px rgba(75,156,211,0.15)' }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: C.text }}>@{me.username}</h1>
         <div style={{ fontSize: 13, color: C.muted }}>{groupName} · Personal record</div>
@@ -1002,8 +1066,11 @@ function HomePage() {
       <div style={{ background: C.bgCard, borderRadius: 16, padding: 16, marginBottom: 16, border: `1px solid ${C.border}`, boxShadow: '0 2px 12px rgba(75,156,211,0.06)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div>
-            <span style={{ fontWeight: 800, fontSize: 14, color: C.text }}>🎰 {groupName}</span>
-            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>10/15 full</div>
+            <button onClick={() => setSwitcherOpen(true)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: C.text }}>🎰 {groupName}</span>
+              <span style={{ fontSize: 11, color: C.primary }}>▾</span>
+            </button>
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>Tap to switch groups</div>
           </div>
           <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>{{ weekly: 'This Week', monthly: 'This Month', yearly: 'This Year' }[period]} · Group Record</span>
         </div>

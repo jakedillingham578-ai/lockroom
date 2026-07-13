@@ -211,6 +211,21 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
   return () => { supabase.removeChannel(channel) }
 }
 
+export async function fetchMyGroups(): Promise<{ id: string; name: string; code: string }[]> {
+  if (!SUPABASE_READY) return []
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+  const { data, error } = await supabase
+    .from('group_members')
+    .select('groups(*)')
+    .eq('user_id', user.id)
+  if (error) { console.error('[store] fetchMyGroups:', error.message); return [] }
+  return (data ?? [])
+    .map((r: any) => r.groups)
+    .filter(Boolean)
+    .map((g: any) => ({ id: g.id, name: g.name, code: g.code }))
+}
+
 export async function fetchGroupByCode(code: string) {
   if (!SUPABASE_READY) return null
   const { data, error } = await supabase
