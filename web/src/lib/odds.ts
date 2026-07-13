@@ -24,6 +24,13 @@ export const ESPN_PATHS: Record<string, { sport: string; leagues: string[] }> = 
   MMA:    { sport: 'mma',        leagues: ['ufc'] },
 }
 
+export type GameOdds = {
+  provider?: string
+  spread?: { home?: { line: string; odds: string }; away?: { line: string; odds: string } }
+  total?: { over?: { line: string; odds: string }; under?: { line: string; odds: string } }
+  moneyline?: { home?: string; away?: string }
+}
+
 export type ESPNGame = {
   id: string
   date: string                  // ISO 8601
@@ -38,6 +45,30 @@ export type ESPNGame = {
   inProgress: boolean
   displayClock?: string         // "4th 2:34" when live
   venue?: string
+  odds?: GameOdds               // live lines from ESPN (DraftKings), when available
+}
+
+// Parse ESPN's odds block into clean spread / total / moneyline with American prices.
+function parseOdds(comp: any): GameOdds | undefined {
+  const o = (comp?.odds ?? [])[0]
+  if (!o) return undefined
+  const pick = (node: any) => node?.current ?? node?.close ?? node?.open
+  const cleanOdds = (s?: string) => { if (!s) return undefined; if (/^ev(en)?$/i.test(s.trim())) return '+100'; return s }
+  const cleanLine = (s?: string) => (s ? s.replace(/[^0-9.\-+]/g, '') : undefined)
+
+  const sp = o.pointSpread, tot = o.total, ml = o.moneyline
+  const spread = sp ? {
+    home: pick(sp.home) ? { line: cleanLine(pick(sp.home).line) ?? '', odds: cleanOdds(pick(sp.home).odds) ?? '' } : undefined,
+    away: pick(sp.away) ? { line: cleanLine(pick(sp.away).line) ?? '', odds: cleanOdds(pick(sp.away).odds) ?? '' } : undefined,
+  } : undefined
+  const total = tot ? {
+    over: pick(tot.over) ? { line: cleanLine(pick(tot.over).line) ?? '', odds: cleanOdds(pick(tot.over).odds) ?? '' } : undefined,
+    under: pick(tot.under) ? { line: cleanLine(pick(tot.under).line) ?? '', odds: cleanOdds(pick(tot.under).odds) ?? '' } : undefined,
+  } : undefined
+  const moneyline = ml ? { home: cleanOdds(pick(ml.home)?.odds), away: cleanOdds(pick(ml.away)?.odds) } : undefined
+
+  if (!spread && !total && !moneyline) return undefined
+  return { provider: o.provider?.name, spread, total, moneyline }
 }
 
 type ESPNEvent = {
@@ -73,6 +104,7 @@ function parseEvent(event: ESPNEvent, sport: string): ESPNGame {
     inProgress,
     displayClock: event.status.displayClock,
     venue: comp.venue?.fullName,
+    odds: parseOdds(comp),
   }
 }
 

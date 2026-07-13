@@ -1767,6 +1767,25 @@ function AddBetPage() {
     setDesc('')
   }
 
+  // Tap a real line from ESPN → prefill the bet (user just adds a stake).
+  const applyLine = (kind: 'spread' | 'moneyline' | 'over_under', side: 'home' | 'away' | 'over' | 'under', line: string, o: string) => {
+    if (!selectedGame) return
+    const home = selectedGame.homeTeam, away = selectedGame.awayTeam
+    setOdds(o.replace('+', '')); setConvertedFrom(null)
+    setType(kind)
+    if (kind === 'spread') {
+      const team = side === 'home' ? home : away
+      const opp = side === 'home' ? away : home
+      setSpreadTeam(team); setSpreadLine(line); setSpreadOpp(opp)
+    } else if (kind === 'moneyline') {
+      const team = side === 'home' ? home : away
+      const opp = side === 'home' ? away : home
+      setMlTeam(team); setMlOpp(opp)
+    } else {
+      setOuMatchup(`${away}/${home}`); setOuDir(side === 'over' ? 'Over' : 'Under'); setOuTotal(line)
+    }
+  }
+
   const handleOddsChange = (val: string) => {
     if (val.includes('%')) {
       const pct = parseFloat(val.replace('%', '').trim())
@@ -1820,6 +1839,7 @@ function AddBetPage() {
         <div style={labelStyle}>Link to a Real Game <span style={{ color: C.primary, fontWeight: 600, fontSize: 10 }}>LIVE · ESPN</span></div>
 
         {selectedGame ? (
+          <>
           <div style={{ background: C.primaryBg, border: `1.5px solid ${C.primary}`, borderRadius: 14, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 800, fontSize: 14 }}>{selectedGame.awayTeam} @ {selectedGame.homeTeam}</div>
@@ -1838,6 +1858,51 @@ function AddBetPage() {
               <button onClick={clearGame} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, cursor: 'pointer', padding: 0 }}>remove</button>
             </div>
           </div>
+
+          {/* Tap-to-add real lines (free, from ESPN) */}
+          {selectedGame.odds && (() => {
+            const od = selectedGame.odds!
+            const cell = (label: string, sub: string, on: () => void, key: string) => (
+              <button key={key} onClick={on} style={{ flex: 1, background: C.bgEl, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: '8px 4px', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{label}</span>
+                <span style={{ fontSize: 11, color: C.muted }}>{fmtOdds(parseInt(sub))}</span>
+              </button>
+            )
+            const lbl = (t: string) => <div style={{ width: 62, textAlign: 'center', fontSize: 9, fontWeight: 800, color: C.muted, textTransform: 'uppercase', flexShrink: 0 }}>{t}</div>
+            const gap = <div style={{ flex: 1 }} />
+            return (
+              <div style={{ marginTop: 10, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '10px 12px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Tap a line to add {od.provider ? `· ${od.provider}` : ''}</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                  <div style={{ flex: 1, fontSize: 11, fontWeight: 700, textAlign: 'center', color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedGame.awayTeam}</div>
+                  <div style={{ width: 62, flexShrink: 0 }} />
+                  <div style={{ flex: 1, fontSize: 11, fontWeight: 700, textAlign: 'center', color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedGame.homeTeam}</div>
+                </div>
+                {od.spread && (od.spread.away || od.spread.home) && (
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'stretch' }}>
+                    {od.spread.away ? cell(od.spread.away.line, od.spread.away.odds, () => applyLine('spread', 'away', od.spread!.away!.line, od.spread!.away!.odds), 'sa') : gap}
+                    {lbl('Spread')}
+                    {od.spread.home ? cell(od.spread.home.line, od.spread.home.odds, () => applyLine('spread', 'home', od.spread!.home!.line, od.spread!.home!.odds), 'sh') : gap}
+                  </div>
+                )}
+                {od.moneyline && (od.moneyline.away || od.moneyline.home) && (
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'stretch' }}>
+                    {od.moneyline.away ? cell('ML', od.moneyline.away, () => applyLine('moneyline', 'away', '', od.moneyline!.away!), 'ma') : gap}
+                    {lbl('Money')}
+                    {od.moneyline.home ? cell('ML', od.moneyline.home, () => applyLine('moneyline', 'home', '', od.moneyline!.home!), 'mh') : gap}
+                  </div>
+                )}
+                {od.total && (od.total.over || od.total.under) && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+                    {od.total.over ? cell(`O ${od.total.over.line}`, od.total.over.odds, () => applyLine('over_under', 'over', od.total!.over!.line, od.total!.over!.odds), 'to') : gap}
+                    {lbl('Total')}
+                    {od.total.under ? cell(`U ${od.total.under.line}`, od.total.under.odds, () => applyLine('over_under', 'under', od.total!.under!.line, od.total!.under!.odds), 'tu') : gap}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+          </>
         ) : (
           <>
             <div style={{ display: 'flex', gap: 8 }}>
