@@ -2273,6 +2273,18 @@ const SPORT_EMOJI: Record<string, string> = {
   NFL: '🏈', CFB: '🏈', NBA: '🏀', MLB: '⚾', NHL: '🏒', Soccer: '⚽', MMA: '🥊', Other: '🎯',
 }
 
+// Deterministic "game of the day" — marquee sport priority, then earliest.
+// Used to pick the featured game before it's pinned server-side.
+const SURVIVOR_SPORT_PRIORITY = ['Soccer', 'NFL', 'CFB', 'NBA', 'NHL', 'MLB', 'MMA', 'Other']
+function featuredGameOf(dayGames: import('./lib/odds').ESPNGame[]) {
+  return [...dayGames].sort((a, b) => {
+    const ra = SURVIVOR_SPORT_PRIORITY.indexOf(a.sport); const rb = SURVIVOR_SPORT_PRIORITY.indexOf(b.sport)
+    const pa = ra < 0 ? 99 : ra, pb = rb < 0 ? 99 : rb
+    if (pa !== pb) return pa - pb
+    return new Date(a.date).getTime() - new Date(b.date).getTime()
+  })[0]
+}
+
 function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
   const { groupName, me, groupId } = useApp()
   type PGame = import('./lib/odds').ESPNGame
@@ -2445,6 +2457,7 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
   type SGame = import('./lib/odds').ESPNGame
   const [games, setGames] = useState<SGame[]>([])
   const [allPicks, setAllPicks] = useState<{ day: string; gameId: string; userId: string; pick: string }[]>([])
+  const [featured, setFeatured] = useState<Record<string, string>>({})  // day → pinned gameId
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
@@ -2452,8 +2465,25 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
       const [odds, store] = await Promise.all([import('./lib/odds'), import('./lib/store')])
       const g = await odds.fetchSurvivorGames()
       const picks = groupId ? await store.fetchSurvivorPicks(groupId) : []
+      let feat = groupId ? await store.fetchFeaturedGames(groupId) : {}
+
+      // Pin a featured game for any day that doesn't have one yet (first writer wins).
+      if (groupId) {
+        const byDayLocal: Record<string, SGame[]> = {}
+        for (const gg of g) { const k = new Date(gg.date).toLocaleDateString('en-CA'); (byDayLocal[k] ??= []).push(gg) }
+        const missing = Object.keys(byDayLocal).filter(d => !feat[d])
+        if (missing.length) {
+          await Promise.all(missing.map(d => {
+            const fg = featuredGameOf(byDayLocal[d])
+            return fg ? store.pinFeaturedGame(groupId, d, fg.id) : Promise.resolve()
+          }))
+          feat = await store.fetchFeaturedGames(groupId)  // re-read whoever won the race
+        }
+      }
+
       setGames(g)
       setAllPicks(picks)
+      setFeatured(feat)
     } catch (e) {
       console.warn('[survivor] load failed', e)
     } finally {
@@ -2480,15 +2510,13 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
   const myPickByDay: Record<string, { gameId: string; pick: string }> = {}
   allPicks.filter(p => p.userId === me.id).forEach(p => { myPickByDay[p.day] = { gameId: p.gameId, pick: p.pick } })
 
-  // The featured "game of the day" — the same marquee matchup everyone is
-  // asked about. Deterministic so all members see the identical game.
-  const SPORT_PRIORITY = ['Soccer', 'NFL', 'CFB', 'NBA', 'NHL', 'MLB', 'MMA', 'Other']
-  const featuredOf = (dayGames: SGame[]) => [...dayGames].sort((a, b) => {
-    const ra = SPORT_PRIORITY.indexOf(a.sport); const rb = SPORT_PRIORITY.indexOf(b.sport)
-    const pa = ra < 0 ? 99 : ra, pb = rb < 0 ? 99 : rb
-    if (pa !== pb) return pa - pb
-    return new Date(a.date).getTime() - new Date(b.date).getTime()
-  })[0]
+  // The featured game for a day: prefer the server-pinned id (authoritative for
+  // the whole group), fall back to the deterministic local choice.
+  const featuredForDay = (day: string): SGame | undefined => {
+    const pinnedId = featured[day]
+    if (pinnedId) { const g = games.find(x => x.id === pinnedId); if (g) return g }
+    return featuredGameOf(byDay[day])
+  }
 
   // Alive/eliminated status: walk each user's picks in day order; a completed
   // pick that didn't win (loss OR draw) knocks them out.
@@ -2550,7 +2578,7 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
 
       {/* One featured game per day */}
       {days.map(day => {
-        const g = featuredOf(byDay[day])
+        const g = featuredForDay(day)
         if (!g) return null
         const myPick = myPickByDay[day]
         const w = winnerOf(g)
