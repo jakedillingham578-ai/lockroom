@@ -71,7 +71,81 @@ export async function fetchGroupMembers(groupId: string): Promise<AppUser[]> {
     .select('profiles(*)')
     .eq('group_id', groupId)
   if (error) { console.error('[store] fetchGroupMembers:', error.message); return [] }
-  return (data ?? []).map((row: any) => rowToUser(row.profiles))
+  return (data ?? []).map((row: any) => rowToUser(row.profiles)).filter(Boolean)
+}
+
+// ── Reactions ────────────────────────────────────────────────
+// Aggregated per bet: { betId: { emoji: [userId, ...] } }
+export async function fetchReactions(betIds: string[]): Promise<Record<string, Record<string, string[]>>> {
+  if (!SUPABASE_READY || betIds.length === 0) return {}
+  const { data, error } = await supabase
+    .from('bet_reactions')
+    .select('*')
+    .in('bet_id', betIds)
+  if (error) { console.error('[store] fetchReactions:', error.message); return {} }
+  const out: Record<string, Record<string, string[]>> = {}
+  for (const r of data ?? []) {
+    out[r.bet_id] ??= {}
+    out[r.bet_id][r.emoji] ??= []
+    out[r.bet_id][r.emoji].push(r.user_id)
+  }
+  return out
+}
+
+export async function toggleReaction(betId: string, userId: string, emoji: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  // Is it already there? Toggle off, else on.
+  const { data: existing } = await supabase
+    .from('bet_reactions')
+    .select('*')
+    .eq('bet_id', betId).eq('user_id', userId).eq('emoji', emoji)
+    .maybeSingle()
+  if (existing) {
+    await supabase.from('bet_reactions').delete().eq('bet_id', betId).eq('user_id', userId).eq('emoji', emoji)
+  } else {
+    await supabase.from('bet_reactions').insert({ bet_id: betId, user_id: userId, emoji })
+  }
+}
+
+// ── Comments ─────────────────────────────────────────────────
+export async function fetchComments(betIds: string[]): Promise<Record<string, any[]>> {
+  if (!SUPABASE_READY || betIds.length === 0) return {}
+  const { data, error } = await supabase
+    .from('bet_comments')
+    .select('*')
+    .in('bet_id', betIds)
+    .order('created_at', { ascending: true })
+  if (error) { console.error('[store] fetchComments:', error.message); return {} }
+  const out: Record<string, any[]> = {}
+  for (const c of data ?? []) {
+    out[c.bet_id] ??= []
+    out[c.bet_id].push({ id: c.id, userId: c.user_id, text: c.text, createdAt: new Date(c.created_at) })
+  }
+  return out
+}
+
+export async function insertComment(betId: string, userId: string, text: string): Promise<any | null> {
+  if (!SUPABASE_READY) return null
+  const { data, error } = await supabase
+    .from('bet_comments')
+    .insert({ bet_id: betId, user_id: userId, text })
+    .select().single()
+  if (error) { console.error('[store] insertComment:', error.message); return null }
+  return { id: data.id, userId: data.user_id, text: data.text, createdAt: new Date(data.created_at) }
+}
+
+// ── Realtime ─────────────────────────────────────────────────
+// Fires onChange whenever bets/reactions/comments change. Returns an unsubscribe fn.
+export function subscribeToGroup(groupId: string, onChange: () => void): () => void {
+  if (!SUPABASE_READY) return () => {}
+  const channel = supabase
+    .channel(`group-${groupId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bets', filter: `group_id=eq.${groupId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_reactions' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_comments' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members', filter: `group_id=eq.${groupId}` }, onChange)
+    .subscribe()
+  return () => { supabase.removeChannel(channel) }
 }
 
 export async function fetchGroupByCode(code: string) {

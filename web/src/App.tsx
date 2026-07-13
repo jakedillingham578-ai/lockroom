@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchGroupByCode, insertBet, updateBetStatus, updateProfile } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
@@ -54,6 +54,45 @@ const mkStats = (w: number, l: number, staked: number, profit: number): Stats =>
   weeklyPnl: [-20, 45, -10, 80, 30, -15, 55],
 })
 
+// Real stats computed from actual bets (American-odds payout math)
+const betPayout = (b: { odds: number; stake: number }) =>
+  b.odds > 0 ? b.stake * b.odds / 100 : b.stake * 100 / Math.abs(b.odds)
+
+function computeStats(allBets: Bet[], userId: string): Stats {
+  const ub = allBets
+    .filter(b => b.userId === userId)
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+  const settled = ub.filter(b => b.status === 'won' || b.status === 'lost')
+  const wins = settled.filter(b => b.status === 'won').length
+  const losses = settled.filter(b => b.status === 'lost').length
+  const totalStaked = settled.reduce((s, b) => s + b.stake, 0)
+  const totalProfit = settled.reduce((s, b) => b.status === 'won' ? s + betPayout(b) : s - b.stake, 0)
+  const roi = totalStaked > 0 ? (totalProfit / totalStaked) * 100 : 0
+  const winRate = wins + losses > 0 ? wins / (wins + losses) : 0
+
+  // Current streak from most recent settled bet backwards
+  let streakType: 'win' | 'loss' = 'win'
+  let count = 0
+  for (let i = settled.length - 1; i >= 0; i--) {
+    const t: 'win' | 'loss' = settled[i].status === 'won' ? 'win' : 'loss'
+    if (count === 0) { streakType = t; count = 1 }
+    else if (t === streakType) count++
+    else break
+  }
+
+  // Daily net P/L for the last 7 days (index 6 = today)
+  const now = Date.now(); const day = 864e5
+  const weeklyPnl = [0, 0, 0, 0, 0, 0, 0]
+  for (const b of settled) {
+    const ageDays = Math.floor((now - b.createdAt.getTime()) / day)
+    if (ageDays >= 0 && ageDays < 7) {
+      weeklyPnl[6 - ageDays] += b.status === 'won' ? betPayout(b) : -b.stake
+    }
+  }
+
+  return { wins, losses, totalStaked, totalProfit, roi, winRate, streak: { type: streakType, count }, weeklyPnl }
+}
+
 const USERS: User[] = [
   { id: 'u1', username: 'you', displayName: 'You', emoji: '🦁', isPro: false, stats: mkStats(14, 8, 1200, 280) },
   { id: 'u2', username: 'owen_bets', displayName: 'Owen', emoji: '🐯', isPro: true, stats: mkStats(22, 10, 2000, 650) },
@@ -96,7 +135,7 @@ const SEED_BETS: Bet[] = [
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 interface Ctx {
-  me: User; users: User[]; bets: Bet[]; groupCode: string
+  me: User; users: User[]; bets: Bet[]; groupCode: string; groupName: string
   addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => void
   settleBet: (id: string, s: 'won' | 'lost' | 'push') => void
   getUserById: (id: string) => User | undefined
@@ -110,18 +149,172 @@ interface Ctx {
 const AppCtx = createContext<Ctx>(null as any)
 const useApp = () => useContext(AppCtx)
 
-const GROUP_CODE = 'DEG247'
+function generateCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase()
+}
+
+function GroupSetupPage({ onGroup }: { onGroup: (id: string, name: string, code: string) => void }) {
+  const [mode, setMode] = useState<'choose' | 'create' | 'join'>('choose')
+  const [groupName, setGroupName] = useState('')
+  const [joinCode, setJoinCode] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const create = async () => {
+    if (!groupName.trim()) return setError('Enter a group name.')
+    setLoading(true); setError('')
+    const code = generateCode()
+    try {
+      if (SUPABASE_READY) {
+        const { supabase: sb } = await import('./lib/supabase')
+        const { data: { user } } = await sb.auth.getUser()
+        const { data, error: err } = await (sb as any).from('groups').insert({ name: groupName.trim(), code, owner_id: user?.id, max_members: 25 }).select().single()
+        if (err) throw err
+        await (sb as any).from('group_members').insert({ group_id: data.id, user_id: user?.id })
+        localStorage.setItem(`lockroom-group-${user?.id}`, JSON.stringify({ id: data.id, name: data.name, code: data.code }))
+        onGroup(data.id, data.name, data.code)
+      } else {
+        const fakeId = `g${Date.now()}`
+        localStorage.setItem(`lockroom-group-anon`, JSON.stringify({ id: fakeId, name: groupName.trim(), code }))
+        onGroup(fakeId, groupName.trim(), code)
+      }
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to create group.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const join = async () => {
+    if (!joinCode.trim()) return setError('Enter a join code.')
+    setLoading(true); setError('')
+    try {
+      if (SUPABASE_READY) {
+        const { supabase: sb } = await import('./lib/supabase')
+        const { data: { user } } = await sb.auth.getUser()
+        const { data: group, error: err } = await (sb as any).from('groups').select('*').eq('code', joinCode.trim().toUpperCase()).single()
+        if (err || !group) throw new Error('Group not found. Check the code.')
+        await (sb as any).from('group_members').upsert({ group_id: group.id, user_id: user?.id })
+        localStorage.setItem(`lockroom-group-${user?.id}`, JSON.stringify({ id: group.id, name: group.name, code: group.code }))
+        onGroup(group.id, group.name, group.code)
+      } else {
+        setError('Join requires a live connection.')
+      }
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to join group.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const s: Record<string, React.CSSProperties> = {
+    wrap: { minHeight: '100vh', background: '#0a1929', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', fontFamily: 'system-ui,-apple-system,sans-serif' },
+    card: { background: '#0f2236', border: '1px solid #1a3a52', borderRadius: 20, padding: '32px 28px', width: '100%', maxWidth: 380 },
+    title: { color: '#fff', fontSize: 22, fontWeight: 900, marginBottom: 6, textAlign: 'center' },
+    sub: { color: '#5a7a90', fontSize: 14, textAlign: 'center', marginBottom: 24, lineHeight: 1.5 },
+    input: { width: '100%', background: '#0a1929', border: '1px solid #1a3a52', borderRadius: 12, padding: '14px 16px', color: '#fff', fontSize: 15, outline: 'none', boxSizing: 'border-box', marginBottom: 12 },
+    btn: { width: '100%', background: '#4B9CD3', color: '#fff', border: 'none', borderRadius: 12, padding: '14px', fontWeight: 800, fontSize: 15, cursor: 'pointer', marginBottom: 10 },
+    ghost: { width: '100%', background: 'transparent', color: '#4B9CD3', border: '1px solid #1a3a52', borderRadius: 12, padding: '14px', fontWeight: 700, fontSize: 15, cursor: 'pointer' },
+    err: { color: '#DC2626', fontSize: 13, textAlign: 'center', marginBottom: 8 },
+  }
+
+  if (mode === 'choose') return (
+    <div style={s.wrap}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
+      <div style={{ color: '#4B9CD3', fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 8 }}>Welcome to Lockroom</div>
+      <div style={s.card}>
+        <div style={s.title}>Set up your group</div>
+        <div style={s.sub}>Create a private group for your crew or join one with a code.</div>
+        <button style={s.btn} onClick={() => setMode('create')}>➕ Create a group</button>
+        <button style={s.ghost} onClick={() => setMode('join')}>🔑 Join with a code</button>
+      </div>
+    </div>
+  )
+
+  if (mode === 'create') return (
+    <div style={s.wrap}>
+      <div style={s.card}>
+        <div style={s.title}>Create a group</div>
+        <div style={s.sub}>Name your crew. You'll get a shareable join code.</div>
+        {error && <div style={s.err}>{error}</div>}
+        <input style={s.input} placeholder="Group name (e.g. The Boys)" value={groupName} onChange={e => setGroupName(e.target.value)} onKeyDown={e => e.key === 'Enter' && create()} autoFocus />
+        <button style={{ ...s.btn, opacity: loading ? 0.6 : 1 }} onClick={create} disabled={loading}>{loading ? 'Creating...' : 'Create group'}</button>
+        <button style={s.ghost} onClick={() => { setMode('choose'); setError('') }}>← Back</button>
+      </div>
+    </div>
+  )
+
+  return (
+    <div style={s.wrap}>
+      <div style={s.card}>
+        <div style={s.title}>Join a group</div>
+        <div style={s.sub}>Enter the 6-character code your friend shared.</div>
+        {error && <div style={s.err}>{error}</div>}
+        <input style={s.input} placeholder="Enter code (e.g. AB12CD)" value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && join()} autoFocus maxLength={6} />
+        <button style={{ ...s.btn, opacity: loading ? 0.6 : 1 }} onClick={join} disabled={loading}>{loading ? 'Joining...' : 'Join group'}</button>
+        <button style={s.ghost} onClick={() => { setMode('choose'); setError('') }}>← Back</button>
+      </div>
+    </div>
+  )
+}
+
+const DEMO = !SUPABASE_READY
+const PLACEHOLDER_USER: User = { id: '', username: '', displayName: '', emoji: '🦁', isPro: false, stats: computeStats([], '') }
 
 function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSignOut: () => void }) {
-  const [me, setMe] = useState(USERS[0])
-  const [users, setUsers] = useState<User[]>(USERS)
-  const [bets, setBets] = useState<Bet[]>(SEED_BETS)
+  const [users, setUsers] = useState<User[]>(DEMO ? USERS : [])
+  const [bets, setBets] = useState<Bet[]>(DEMO ? SEED_BETS : [])
+  const [myId, setMyId] = useState<string>(DEMO ? 'u1' : '')
   const [groupId, setGroupId] = useState<string | null>(null)
+  const [groupName, setGroupName] = useState('My Group')
+  const [groupCode, setGroupCode] = useState('')
   const [loading, setLoading] = useState(SUPABASE_READY)
+  const [needsGroup, setNeedsGroup] = useState(false)
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('lockroom-dark') === 'true')
+
+  const me = useMemo(() => users.find(u => u.id === myId) ?? users[0] ?? PLACEHOLDER_USER, [users, myId])
 
   const toggleDark = useCallback(() => {
     setDarkMode(prev => { const next = !prev; localStorage.setItem('lockroom-dark', String(next)); return next })
+  }, [])
+
+  // Pull everything for a group from Supabase and rebuild state with real stats.
+  const loadGroup = useCallback(async (gId: string) => {
+    try {
+      const { supabase: sb } = await import('./lib/supabase')
+      const { data: { user: authUser } } = await sb.auth.getUser()
+      const [members, groupBets] = await Promise.all([
+        fetchGroupMembers(gId),
+        fetchGroupBets(gId),
+      ])
+      const betIds = groupBets.map(b => b.id)
+      const [reactionsMap, commentsMap] = await Promise.all([
+        fetchReactions(betIds),
+        fetchComments(betIds),
+      ])
+
+      // Attach reactions + comments to each bet
+      const enrichedBets = groupBets.map(b => ({
+        ...b,
+        reactions: reactionsMap[b.id]
+          ? Object.entries(reactionsMap[b.id]).map(([emoji, userIds]) => ({ emoji: emoji as ReactionEmoji, userIds }))
+          : [],
+        comments: commentsMap[b.id] ?? [],
+      })) as Bet[]
+      setBets(enrichedBets)
+
+      // Build members with stats computed from real bets
+      if (members.length > 0) {
+        const mapped: User[] = members.map(m => ({
+          id: m.id, username: m.username, displayName: m.displayName,
+          emoji: m.emoji, isPro: m.isPro, stats: computeStats(enrichedBets, m.id),
+        }))
+        setUsers(mapped)
+      }
+      if (authUser) setMyId(authUser.id)
+    } catch (e) {
+      console.warn('[AppProvider] loadGroup failed:', e)
+    }
   }, [])
 
   // Load real data from Supabase on mount
@@ -131,91 +324,89 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     async function load() {
       try {
         const { supabase: sb } = await import('./lib/supabase')
-
-        // Get the currently logged-in Supabase user
         const { data: { user: authUser } } = await sb.auth.getUser()
-
-        // Find the group
-        const group = await fetchGroupByCode(GROUP_CODE)
-        if (!group) { setLoading(false); return }
-        const groupId = (group as any).id
-        setGroupId(groupId)
-
-        // Load members and bets in parallel
-        const [members, groupBets] = await Promise.all([
-          fetchGroupMembers(groupId),
-          fetchGroupBets(groupId),
-        ])
-
-        if (members.length > 0) {
-          const mapped: User[] = members.map(m => {
-            const seed = USERS.find(u => u.username === m.username) ?? USERS[0]
-            return { ...seed, ...m, stats: seed.stats }
-          })
-          setUsers(mapped)
-
-          // Set "me" to the logged-in user, fallback to first member
-          if (authUser) {
-            const loggedIn = mapped.find(u => u.id === authUser.id) ?? mapped[0]
-            setMe(loggedIn)
-          } else {
-            setMe(mapped[0])
-          }
+        const uid = authUser?.id
+        if (uid) setMyId(uid)
+        const saved = uid ? localStorage.getItem(`lockroom-group-${uid}`) : null
+        if (saved) {
+          const { id, name, code } = JSON.parse(saved)
+          setGroupId(id); setGroupName(name); setGroupCode(code)
+          await loadGroup(id)
+        } else {
+          setNeedsGroup(true)
         }
-
-        if (groupBets.length > 0) setBets(groupBets)
       } catch (e) {
-        console.warn('[AppProvider] Supabase load failed, using mock data:', e)
+        console.warn('[AppProvider] Supabase load failed:', e)
+        setNeedsGroup(true)
       } finally {
         setLoading(false)
       }
     }
 
     load()
-  }, [])
+  }, [loadGroup])
+
+  // Live sync: refetch when anyone in the group changes bets/reactions/comments,
+  // plus on window focus and a slow poll as a fallback if realtime isn't enabled.
+  useEffect(() => {
+    if (!SUPABASE_READY || !groupId) return
+    const refetch = () => { loadGroup(groupId) }
+    const unsub = subscribeToGroup(groupId, refetch)
+    window.addEventListener('focus', refetch)
+    const poll = setInterval(refetch, 20000)
+    return () => { unsub(); window.removeEventListener('focus', refetch); clearInterval(poll) }
+  }, [groupId, loadGroup])
+
+  const handleGroupReady = useCallback(async (id: string, name: string, code: string) => {
+    setGroupId(id); setGroupName(name); setGroupCode(code)
+    setNeedsGroup(false)
+    if (SUPABASE_READY) await loadGroup(id)
+  }, [loadGroup])
 
   const getUserById = useCallback((id: string) => users.find(u => u.id === id), [users])
 
   const addBet = useCallback(async (b: Omit<Bet, 'id' | 'createdAt'>) => {
-    const local: Bet = { ...b, id: `b${Date.now()}`, createdAt: new Date() }
-    setBets(prev => [local, ...prev]) // optimistic update
-
+    const local: Bet = { ...b, id: `b${Date.now()}`, createdAt: new Date(), reactions: [], comments: [] }
+    setBets(prev => [local, ...prev]) // optimistic
     if (SUPABASE_READY && groupId) {
-      const saved = await insertBet(b, groupId)
-      if (saved) {
-        // Replace optimistic entry with real DB row (gets real UUID)
-        setBets(prev => prev.map(bet => bet.id === local.id ? saved : bet))
-      }
+      await insertBet(b, groupId)
+      await loadGroup(groupId) // reconcile with real row + recompute stats
     }
-  }, [groupId])
+  }, [groupId, loadGroup])
 
   const settleBet = useCallback(async (id: string, s: 'won' | 'lost' | 'push') => {
     setBets(prev => prev.map(b => b.id === id ? { ...b, status: s, settledAt: new Date() } : b))
-    if (SUPABASE_READY) await updateBetStatus(id, s)
-  }, [])
+    if (SUPABASE_READY) {
+      await updateBetStatus(id, s)
+      if (groupId) await loadGroup(groupId)
+    }
+  }, [groupId, loadGroup])
 
   const upgradePro = useCallback(async () => {
-    setMe(prev => ({ ...prev, isPro: true }))
-    if (SUPABASE_READY) await updateProfile(me.id, { is_pro: true })
-  }, [me.id])
+    setUsers(prev => prev.map(u => u.id === myId ? { ...u, isPro: true } : u))
+    if (SUPABASE_READY && myId) await updateProfile(myId, { is_pro: true })
+  }, [myId])
 
-  const reactToBet = useCallback((betId: string, emoji: ReactionEmoji) => {
+  const reactToBet = useCallback(async (betId: string, emoji: ReactionEmoji) => {
+    // optimistic toggle
     setBets(prev => prev.map(b => {
       if (b.id !== betId) return b
       const reactions = b.reactions ? [...b.reactions] : []
       const existing = reactions.find(r => r.emoji === emoji)
       if (existing) {
-        const alreadyReacted = existing.userIds.includes(me.id)
-        return { ...b, reactions: reactions.map(r => r.emoji === emoji ? { ...r, userIds: alreadyReacted ? r.userIds.filter(id => id !== me.id) : [...r.userIds, me.id] } : r) }
+        const already = existing.userIds.includes(myId)
+        return { ...b, reactions: reactions.map(r => r.emoji === emoji ? { ...r, userIds: already ? r.userIds.filter(id => id !== myId) : [...r.userIds, myId] } : r).filter(r => r.userIds.length > 0) }
       }
-      return { ...b, reactions: [...reactions, { emoji, userIds: [me.id] }] }
+      return { ...b, reactions: [...reactions, { emoji, userIds: [myId] }] }
     }))
-  }, [me.id])
+    if (SUPABASE_READY && myId) await toggleReaction(betId, myId, emoji)
+  }, [myId])
 
-  const commentOnBet = useCallback((betId: string, text: string) => {
-    const comment: Comment = { id: `c${Date.now()}`, userId: me.id, text, createdAt: new Date() }
-    setBets(prev => prev.map(b => b.id !== betId ? b : { ...b, comments: [...(b.comments ?? []), comment] }))
-  }, [me.id])
+  const commentOnBet = useCallback(async (betId: string, text: string) => {
+    const temp: Comment = { id: `c${Date.now()}`, userId: myId, text, createdAt: new Date() }
+    setBets(prev => prev.map(b => b.id !== betId ? b : { ...b, comments: [...(b.comments ?? []), temp] }))
+    if (SUPABASE_READY && myId) await insertComment(betId, myId, text)
+  }, [myId])
 
   if (loading) return (
     <div style={{ minHeight: '100vh', background: '#F0F5FA', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
@@ -225,8 +416,10 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     </div>
   )
 
+  if (needsGroup) return <GroupSetupPage onGroup={handleGroupReady} />
+
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode: GROUP_CODE, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
         {children}
       </div>
@@ -750,7 +943,7 @@ const btnStyle: React.CSSProperties = {
 
 // ─── Home / Feed ──────────────────────────────────────────────────────────────
 function HomePage() {
-  const { me, bets } = useApp()
+  const { me, bets, groupName } = useApp()
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const now = Date.now()
   const periodMs = { weekly: 7 * 864e5, monthly: 30 * 864e5, yearly: 365 * 864e5 }
@@ -771,7 +964,7 @@ function HomePage() {
     <div>
       <div style={{ background: 'rgba(75,156,211,0.15)', backdropFilter: 'blur(12px)', borderRadius: 20, padding: '20px 20px 16px', marginBottom: 16, color: C.text, border: `1px solid rgba(75,156,211,0.3)`, boxShadow: '0 4px 20px rgba(75,156,211,0.15)' }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: C.text }}>@{me.username}</h1>
-        <div style={{ fontSize: 13, color: C.muted }}>Citadel · Personal record</div>
+        <div style={{ fontSize: 13, color: C.muted }}>{groupName} · Personal record</div>
         <div style={{ display: 'flex', gap: 16, marginTop: 14 }}>
           {[
             { label: 'Record', val: `${me.stats.wins}W`, val2: `-${me.stats.losses}L`, color1: '#4ade80', color2: '#f87171' },
@@ -792,7 +985,7 @@ function HomePage() {
       <div style={{ background: C.bgCard, borderRadius: 16, padding: 16, marginBottom: 16, border: `1px solid ${C.border}`, boxShadow: '0 2px 12px rgba(75,156,211,0.06)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div>
-            <span style={{ fontWeight: 800, fontSize: 14, color: C.text }}>🎰 Citadel</span>
+            <span style={{ fontWeight: 800, fontSize: 14, color: C.text }}>🎰 {groupName}</span>
             <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>10/15 full</div>
           </div>
           <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>{{ weekly: 'This Week', monthly: 'This Month', yearly: 'This Year' }[period]} · Group Record</span>
@@ -827,7 +1020,7 @@ function HomePage() {
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 function LeaderboardPage() {
-  const { me, users, bets, upgradePro } = useApp()
+  const { me, users, bets, upgradePro, groupName } = useApp()
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const [showUpgrade, setShowUpgrade] = useState(false)
 
@@ -902,7 +1095,7 @@ function LeaderboardPage() {
             <div style={{ textAlign: 'center', marginBottom: 24 }}>
               <div style={{ fontSize: 48, marginBottom: 12 }}>⚡</div>
               <div style={{ fontSize: 24, fontWeight: 900, marginBottom: 8 }}>Upgrade to Pro</div>
-              <div style={{ fontSize: 14, color: C.muted }}>Unlock the full analytics suite for Citadel</div>
+              <div style={{ fontSize: 14, color: C.muted }}>Unlock the full analytics suite for {groupName}</div>
             </div>
             {[
               { icon: '📊', title: 'Advanced Board Analytics', desc: 'ROI breakdowns, sharp ratings, follow/fade board' },
@@ -936,7 +1129,7 @@ function LeaderboardPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 900 }}>Board 🏆</h1>
-          <p style={{ color: C.muted, fontSize: 13 }}>Citadel</p>
+          <p style={{ color: C.muted, fontSize: 13 }}>{groupName}</p>
         </div>
         {!me.isPro
           ? <button onClick={() => setShowUpgrade(true)} style={{ background: 'linear-gradient(135deg,#B45309,#D97706)', border: 'none', borderRadius: 99, padding: '7px 14px', cursor: 'pointer', color: '#fff', fontWeight: 800, fontSize: 12 }}>⚡ Go Pro</button>
@@ -959,7 +1152,7 @@ function LeaderboardPage() {
         <Avatar name={me.displayName} size={44} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 2 }}>{periodLabel[period]}</div>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>You're #{myRank} in Citadel</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>You're #{myRank} in {groupName}</div>
           <div style={{ fontSize: 12, opacity: 0.8, marginTop: 2 }}>
             {sorted.find(u => u.id === me.id)?.wins ?? 0}W – {sorted.find(u => u.id === me.id)?.losses ?? 0}L
             {myRank === 1 ? ' · 👑 Top of the group' : myRank === sorted.length ? ' · Room to grow 😅' : ` · ${myRank - 1} spot${myRank - 1 !== 1 ? 's' : ''} from the top`}
@@ -1763,7 +1956,7 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, groupCode, upgradePro, signOut, darkMode, toggleDark } = useApp()
+  const { me, bets, groupCode, groupName, upgradePro, signOut, darkMode, toggleDark } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
   const [copied, setCopied] = useState(false)
 
@@ -1817,7 +2010,7 @@ function ProfilePage() {
       <div style={{ background: C.bgCard, borderRadius: 12, padding: '12px 16px', marginBottom: 16, border: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <span style={{ fontSize: 16, marginRight: 8 }}>🎰</span>
-          <span style={{ fontWeight: 700 }}>Citadel</span>
+          <span style={{ fontWeight: 700 }}>{groupName}</span>
           <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Code: <span style={{ color: C.primary, fontWeight: 700 }}>{groupCode}</span></div>
         </div>
         <button onClick={shareInvite} style={{ background: C.primaryBg, border: `1px solid ${C.primary}`, borderRadius: 10, padding: '7px 14px', cursor: 'pointer', color: C.primary, fontSize: 13, fontWeight: 700 }}>
@@ -1910,6 +2103,7 @@ function ProfilePage() {
 
 // ─── Competition Detail Views ─────────────────────────────────────────────────
 function BestRecordComp({ users, bets, onBack }: { users: User[], bets: any[], onBack: () => void }) {
+  const { groupName } = useApp()
   const now = Date.now()
   const weekBets = bets.filter(b => b.status !== 'pending' && (now - b.createdAt.getTime()) < 7 * 864e5)
   const standings = users.map(u => {
@@ -1924,7 +2118,7 @@ function BestRecordComp({ users, bets, onBack }: { users: User[], bets: any[], o
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Weekly Best Record</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>4 days left · Citadel</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>4 days left · {groupName}</p>
       <div style={{ background: C.goldBg, border: `1px solid rgba(180,83,9,0.2)`, borderRadius: 10, padding: '10px 14px', marginBottom: 20 }}>
         <div style={{ color: C.gold, fontWeight: 700, fontSize: 13 }}>Prize: Bragging rights + winner picks next group dinner</div>
       </div>
@@ -1944,6 +2138,7 @@ function BestRecordComp({ users, bets, onBack }: { users: User[], bets: any[], o
 }
 
 function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
+  const { groupName } = useApp()
   // 5 players: u4 vs u5 in R1, u1 gets bye, semis: u1 vs winner(u4/u5), u2 vs u3
   const lc = C.borderL // line color
   const slotH = 36 // slot height
@@ -1980,7 +2175,7 @@ function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Custom Bracket</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 24 }}>Citadel · 5-player single elimination</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 24 }}>{groupName} · 5-player single elimination</p>
 
       <div style={{ overflowX: 'auto', paddingBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, minWidth: 580 }}>
@@ -2058,6 +2253,7 @@ function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
 }
 
 function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
+  const { groupName } = useApp()
   const [picks, setPicks] = useState<Record<string, string>>({})
   const games = [
     { id: 'g1', home: 'Chiefs', away: 'Bills', time: 'Thu · 8:15 PM', sport: '🏈', spread: '-3.5' },
@@ -2087,7 +2283,7 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
           <div>
             <h2 style={{ fontSize: 20, fontWeight: 900, marginBottom: 2 }}>Weekly Pick'em</h2>
-            <p style={{ color: C.muted, fontSize: 12 }}>Citadel · Week of June 16</p>
+            <p style={{ color: C.muted, fontSize: 12 }}>{groupName} · Week of June 16</p>
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 22, fontWeight: 900, color: submitted ? C.win : C.primary }}>{madeCount}/{games.length}</div>
@@ -2188,6 +2384,7 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
 }
 
 function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) {
+  const { groupName } = useApp()
   const [pick, setPick] = useState('')
   const teams = ['Chiefs', 'Eagles', 'Ravens', 'Bills', 'Cowboys', 'Dolphins', 'Lions', 'Niners']
   const eliminated = [users[2], users[4]]
@@ -2197,7 +2394,7 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Survivor Pool</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>Citadel · Week 14 · Pick one team to win</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>{groupName} · Week 14 · Pick one team to win</p>
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
         <div style={{ flex: 1, background: C.winBg, border: `1px solid ${C.win}`, borderRadius: 12, padding: '12px', textAlign: 'center' }}>
           <div style={{ fontSize: 22, fontWeight: 900, color: C.win }}>{alive.length}</div>
@@ -2241,6 +2438,7 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
 }
 
 function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], onBack: () => void }) {
+  const { groupName } = useApp()
   const [selected, setSelected] = useState<string | null>(null)
 
   const yearBets = bets.filter((b: any) => b.status !== 'pending' && (Date.now() - b.createdAt.getTime()) < 365 * 864e5)
@@ -2426,7 +2624,7 @@ function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], o
 
       {/* Hero header */}
       <div style={{ background: `linear-gradient(135deg, #1a3a52 0%, #2a5a7a 100%)`, borderRadius: 18, padding: '22px 20px', marginBottom: 20, color: '#fff' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, opacity: 0.7, marginBottom: 6 }}>Citadel · 2024–25 Season</div>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, opacity: 0.7, marginBottom: 6 }}>{groupName} · 2024–25 Season</div>
         <h2 style={{ fontSize: 26, fontWeight: 900, marginBottom: 16 }}>Season Long</h2>
         <div style={{ display: 'flex', gap: 10 }}>
           {[
@@ -2491,7 +2689,7 @@ function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], o
 
 // ─── Competitions ─────────────────────────────────────────────────────────────
 function CompetitionsPage() {
-  const { me, users, bets, upgradePro } = useApp()
+  const { me, users, bets, upgradePro, groupName } = useApp()
   const [showModal, setShowModal] = useState(false)
   const [activeComp, setActiveComp] = useState<string | null>(null)
 
@@ -2511,7 +2709,7 @@ function CompetitionsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 900 }}>Competitions</h1>
-          <p style={{ color: C.muted, fontSize: 13 }}>Citadel</p>
+          <p style={{ color: C.muted, fontSize: 13 }}>{groupName}</p>
         </div>
         <button onClick={() => freeUsed && !me.isPro ? setShowModal(true) : alert('Create competition (coming soon)')} style={{ ...btnStyle, padding: '8px 16px', fontSize: 13 }}>+ New</button>
       </div>
@@ -2658,72 +2856,69 @@ function Layout() {
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 function WaitlistPage() {
-  const [email, setEmail] = useState('')
-  const [submitted, setSubmitted] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const submit = async () => {
-    if (!email || !email.includes('@')) return setError('Enter a valid email.')
-    setLoading(true); setError('')
-    try {
-      if (SUPABASE_READY) {
-        const { supabase: sb } = await import('./lib/supabase')
-        await (sb as any).from('waitlist').insert({ email })
-      }
-      setSubmitted(true)
-    } catch {
-      setError('Something went wrong. Try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
   return (
-    <div style={{ minHeight: '100vh', background: '#0D1F2D', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', fontFamily: 'system-ui,-apple-system,sans-serif' }}>
-      <div style={{ width: 64, height: 64, borderRadius: 18, background: '#4B9CD3', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
-        <span style={{ fontSize: 32 }}>🔒</span>
-      </div>
-      <div style={{ color: '#4B9CD3', fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 8 }}>Coming Soon</div>
-      <div style={{ color: '#fff', fontSize: 36, fontWeight: 900, letterSpacing: -1, marginBottom: 8 }}>Lockroom</div>
-      <div style={{ color: '#5A6A7A', fontSize: 15, textAlign: 'center', lineHeight: 1.6, maxWidth: 300, marginBottom: 36 }}>
-        Your crew's private betting league. Post picks, talk trash, see who's actually sharp.
+    <div style={{ minHeight: '100vh', background: '#0a1929', fontFamily: 'system-ui,-apple-system,sans-serif', overflowX: 'hidden' }}>
+      {/* Hero */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 24px 40px', textAlign: 'center' }}>
+        <div style={{ width: 80, height: 80, borderRadius: 22, background: 'linear-gradient(135deg,#1e5f8e,#4B9CD3)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 24, boxShadow: '0 8px 32px rgba(75,156,211,0.3)' }}>
+          <span style={{ fontSize: 40 }}>🔒</span>
+        </div>
+        <div style={{ display: 'inline-block', background: 'rgba(75,156,211,0.15)', border: '1px solid rgba(75,156,211,0.4)', borderRadius: 20, padding: '4px 14px', color: '#4B9CD3', fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 16 }}>
+          Coming Soon
+        </div>
+        <h1 style={{ color: '#fff', fontSize: 52, fontWeight: 900, letterSpacing: -2, margin: '0 0 12px', lineHeight: 1 }}>Lockroom</h1>
+        <p style={{ color: '#6b8299', fontSize: 18, lineHeight: 1.6, maxWidth: 380, margin: '0 0 8px' }}>
+          Your crew's private betting league.
+        </p>
+        <p style={{ color: '#4a6070', fontSize: 15, lineHeight: 1.6, maxWidth: 340, margin: '0 0 40px' }}>
+          Post picks, talk trash, and see who's actually sharp — all in one private group.
+        </p>
+
+        {/* CTA box */}
+        <div style={{ background: 'linear-gradient(135deg, #0f2d45, #112a40)', border: '1px solid rgba(75,156,211,0.25)', borderRadius: 20, padding: '32px 28px', width: '100%', maxWidth: 420, boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>🔔</div>
+          <div style={{ color: '#fff', fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Get notified when we go live</div>
+          <div style={{ color: '#5a7a90', fontSize: 14, marginBottom: 24, lineHeight: 1.5 }}>
+            Subscribe below and we'll email you the second Lockroom opens. No spam — one email, that's it.
+          </div>
+          <a
+            href="https://lockroom.beehiiv.com/subscribe"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'block', background: 'linear-gradient(135deg,#1e70b0,#4B9CD3)', color: '#fff', textDecoration: 'none', borderRadius: 14, padding: '16px 24px', fontWeight: 800, fontSize: 16, textAlign: 'center', boxShadow: '0 4px 20px rgba(75,156,211,0.4)', transition: 'opacity 0.2s' }}
+            onMouseEnter={e => (e.currentTarget.style.opacity = '0.88')}
+            onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
+          >
+            Subscribe for launch notification →
+          </a>
+          <div style={{ color: '#3a5570', fontSize: 12, textAlign: 'center', marginTop: 12 }}>
+            lockroom.beehiiv.com/subscribe
+          </div>
+        </div>
       </div>
 
-      {submitted ? (
-        <div style={{ background: 'rgba(22,163,74,0.1)', border: '1px solid #16A34A', borderRadius: 16, padding: '24px 32px', textAlign: 'center', maxWidth: 320, width: '100%' }}>
-          <div style={{ fontSize: 40, marginBottom: 8 }}>🎯</div>
-          <div style={{ color: '#16A34A', fontSize: 20, fontWeight: 900, marginBottom: 6 }}>You're on the list!</div>
-          <div style={{ color: '#5A6A7A', fontSize: 14 }}>We'll email you the second Lockroom is live.</div>
+      {/* Features */}
+      <div style={{ padding: '0 24px 60px', maxWidth: 480, margin: '0 auto' }}>
+        <div style={{ color: '#3a5570', fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', textAlign: 'center', marginBottom: 20 }}>What's inside</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {[
+            ['📊', 'Leaderboard', 'See the rankings for your whole group in real time'],
+            ['🔥', 'Reactions', 'Flame bets, call out bad picks, comment on every slip'],
+            ['🎯', "Pick'em", 'Weekly competitions to crown the sharpest bettor'],
+            ['🔒', 'Private', 'Invite-only — just you and your crew, no randos'],
+            ['📈', 'Bet Tracking', 'Spread, ML, O/U, parlays — all logged automatically'],
+            ['🏆', 'Streak Badges', 'Win streaks, hot hands, and bragging rights built in'],
+          ].map(([icon, title, desc]) => (
+            <div key={title} style={{ background: '#0f2236', border: '1px solid #1a3a52', borderRadius: 16, padding: '18px 16px' }}>
+              <div style={{ fontSize: 24, marginBottom: 8 }}>{icon}</div>
+              <div style={{ color: '#fff', fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{title}</div>
+              <div style={{ color: '#4a6070', fontSize: 12, lineHeight: 1.5 }}>{desc}</div>
+            </div>
+          ))}
         </div>
-      ) : (
-        <div style={{ width: '100%', maxWidth: 360 }}>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && submit()}
-              placeholder="your@email.com"
-              type="email"
-              style={{ flex: 1, background: '#1a3a52', border: '1px solid #2a4a62', borderRadius: 12, padding: '14px 16px', color: '#fff', fontSize: 15, outline: 'none' }}
-            />
-            <button onClick={submit} disabled={loading} style={{ background: '#4B9CD3', color: '#fff', border: 'none', borderRadius: 12, padding: '14px 20px', fontWeight: 800, fontSize: 15, cursor: 'pointer', opacity: loading ? 0.6 : 1 }}>
-              {loading ? '...' : 'Notify me'}
-            </button>
-          </div>
-          {error && <div style={{ color: '#DC2626', fontSize: 13, textAlign: 'center' }}>{error}</div>}
-          <div style={{ color: '#5A6A7A', fontSize: 12, textAlign: 'center', marginTop: 8 }}>No spam. Just a single email when we launch.</div>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 40, width: '100%', maxWidth: 320 }}>
-        {[['📊', 'Live leaderboard for your group'], ['🔥', 'React and comment on every bet'], ['🎯', "Weekly pick'em competitions"], ['🔒', 'Private — just you and your crew']].map(([icon, text]) => (
-          <div key={text} style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#1a3a52', borderRadius: 12, padding: '12px 16px' }}>
-            <span style={{ fontSize: 18 }}>{icon}</span>
-            <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{text}</span>
-          </div>
-        ))}
       </div>
+
+      <div style={{ paddingBottom: 40 }} />
     </div>
   )
 }
