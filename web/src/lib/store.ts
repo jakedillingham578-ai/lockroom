@@ -211,6 +211,32 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
   return () => { supabase.removeChannel(channel) }
 }
 
+// Ensure the current user has a profile row; returns their profile.
+export async function ensureMyProfile(): Promise<{ id: string; displayName: string; username: string; nameConfirmed: boolean } | null> {
+  if (!SUPABASE_READY) return null
+  const { data: { session } } = await supabase.auth.getSession()
+  const u = session?.user
+  if (!u) return null
+  const { data: existing } = await supabase
+    .from('profiles').select('id, display_name, username, name_confirmed').eq('id', u.id).maybeSingle()
+  if (existing) return { id: (existing as any).id, displayName: (existing as any).display_name, username: (existing as any).username, nameConfirmed: !!(existing as any).name_confirmed }
+  const username = (u.email ?? 'user').split('@')[0].replace(/[^a-z0-9_]/gi, '_')
+  const gname = (u.user_metadata?.full_name || u.user_metadata?.name || username)
+  const { data: created, error } = await supabase
+    .from('profiles').insert({ id: u.id, username, display_name: gname, name_confirmed: false })
+    .select('id, display_name, username, name_confirmed').single()
+  if (error) { console.error('[store] ensureMyProfile:', error.message); return null }
+  return { id: (created as any).id, displayName: (created as any).display_name, username: (created as any).username, nameConfirmed: false }
+}
+
+export async function setDisplayName(name: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  const { data: { session } } = await supabase.auth.getSession()
+  const uid = session?.user?.id
+  if (!uid) return
+  await supabase.from('profiles').update({ display_name: name, name_confirmed: true }).eq('id', uid)
+}
+
 export async function fetchMyGroups(): Promise<{ id: string; name: string; code: string }[]> {
   if (!SUPABASE_READY) return []
   const { data: { session } } = await supabase.auth.getSession()

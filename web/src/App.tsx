@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
@@ -157,7 +157,38 @@ function generateCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase()
 }
 
-function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: string, code: string) => void; onCancel?: () => void }) {
+function NameSetupPage({ suggested, onDone }: { suggested: string; onDone: (name: string) => void | Promise<void> }) {
+  const [name, setName] = useState(suggested)
+  const [saving, setSaving] = useState(false)
+  const submit = async () => {
+    if (!name.trim()) return
+    setSaving(true)
+    await onDone(name.trim())
+  }
+  return (
+    <div style={{ minHeight: '100vh', background: '#0a1929', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 24px', fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>👋</div>
+      <div style={{ color: '#4B9CD3', fontSize: 11, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 8 }}>Welcome to Lockroom</div>
+      <div style={{ background: '#0f2236', border: '1px solid #1a3a52', borderRadius: 20, padding: '28px 24px', width: '100%', maxWidth: 380 }}>
+        <div style={{ color: '#fff', fontSize: 22, fontWeight: 900, marginBottom: 6, textAlign: 'center' }}>What's your name?</div>
+        <div style={{ color: '#5a7a90', fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 1.5 }}>This is how your crew will see you — on the leaderboard, bets, everywhere.</div>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && submit()}
+          placeholder="e.g. Jake Dillingham"
+          autoFocus
+          style={{ width: '100%', background: '#0a1929', border: '1px solid #1a3a52', borderRadius: 12, padding: '14px 16px', color: '#fff', fontSize: 16, outline: 'none', boxSizing: 'border-box', marginBottom: 12 }}
+        />
+        <button onClick={submit} disabled={saving || !name.trim()} style={{ width: '100%', background: '#4B9CD3', color: '#fff', border: 'none', borderRadius: 12, padding: '14px', fontWeight: 800, fontSize: 15, cursor: 'pointer', opacity: saving || !name.trim() ? 0.6 : 1 }}>
+          {saving ? 'Saving…' : 'Continue'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: string, code: string) => void | Promise<void>; onCancel?: () => void }) {
   const [mode, setMode] = useState<'choose' | 'create' | 'join'>('choose')
   const [groupName, setGroupName] = useState('')
   const [joinCode, setJoinCode] = useState('')
@@ -184,10 +215,10 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
         const { error: memErr } = await (sb as any).from('group_members').insert({ group_id: data.id, user_id: uid })
         if (memErr) throw memErr
         localStorage.setItem(`lockroom-active-${uid}`, data.id)
-        onGroup(data.id, data.name, data.code)
+        await onGroup(data.id, data.name, data.code)
       } else {
         const fakeId = `g${Date.now()}`
-        onGroup(fakeId, groupName.trim(), code)
+        await onGroup(fakeId, groupName.trim(), code)
       }
     } catch (e: any) {
       setError(e.message ?? 'Failed to create group.')
@@ -212,7 +243,7 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
         const { data: check } = await (sb as any).from('group_members').select('group_id').eq('group_id', group.id).eq('user_id', uid).maybeSingle()
         if (!check) throw new Error('Could not join — please try again.')
         localStorage.setItem(`lockroom-active-${uid}`, group.id)
-        onGroup(group.id, group.name, group.code)
+        await onGroup(group.id, group.name, group.code)
       } else {
         setError('Join requires a live connection.')
       }
@@ -278,6 +309,23 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
 const DEMO = !SUPABASE_READY
 const PLACEHOLDER_USER: User = { id: '', username: '', displayName: '', emoji: '🦁', isPro: false, stats: computeStats([], '') }
 
+// Catch render crashes so the user sees a recover button instead of a blank screen.
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) { super(props); this.state = { hasError: false } }
+  static getDerivedStateFromError() { return { hasError: true } }
+  componentDidCatch(err: any) { console.error('[ErrorBoundary]', err) }
+  render() {
+    if (this.state.hasError) return (
+      <div style={{ minHeight: '100vh', background: '#0a1929', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center', fontFamily: 'system-ui,sans-serif' }}>
+        <div style={{ fontSize: 40 }}>🔒</div>
+        <div style={{ color: '#fff', fontWeight: 800, fontSize: 18 }}>Something hiccuped</div>
+        <button onClick={() => window.location.reload()} style={{ background: '#4B9CD3', color: '#fff', border: 'none', borderRadius: 12, padding: '12px 24px', fontWeight: 800, fontSize: 15, cursor: 'pointer' }}>Reload</button>
+      </div>
+    )
+    return this.props.children
+  }
+}
+
 function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSignOut: () => void }) {
   const [users, setUsers] = useState<User[]>(DEMO ? USERS : [])
   const [bets, setBets] = useState<Bet[]>(DEMO ? SEED_BETS : [])
@@ -288,6 +336,8 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   const [loading, setLoading] = useState(SUPABASE_READY)
   const [needsGroup, setNeedsGroup] = useState(false)
   const [addingGroup, setAddingGroup] = useState(false)
+  const [needsName, setNeedsName] = useState(false)
+  const [suggestedName, setSuggestedName] = useState('')
   const [myGroups, setMyGroups] = useState<{ id: string; name: string; code: string }[]>([])
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('lockroom-dark') === 'true')
 
@@ -337,6 +387,20 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     }
   }, [])
 
+  // Resolve which group is active and load it (used on mount + after name step).
+  const resolveGroups = useCallback(async (uid: string) => {
+    const groups = await fetchMyGroups()
+    setMyGroups(groups)
+    if (groups.length === 0) { setNeedsGroup(true); return }
+    const serverLast = await fetchLastGroup()
+    const localLast = uid ? localStorage.getItem(`lockroom-active-${uid}`) : null
+    const active = groups.find(g => g.id === serverLast) ?? groups.find(g => g.id === localLast) ?? groups[0]
+    if (uid) localStorage.setItem(`lockroom-active-${uid}`, active.id)
+    setLastGroup(active.id)
+    setGroupId(active.id); setGroupName(active.name); setGroupCode(active.code)
+    await loadGroup(active.id)
+  }, [loadGroup])
+
   // Load real data from Supabase on mount
   useEffect(() => {
     if (!SUPABASE_READY) return
@@ -348,20 +412,15 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
         const uid = session?.user?.id
         if (uid) setMyId(uid)
 
-        const groups = await fetchMyGroups()
-        setMyGroups(groups)
+        // Make sure a profile exists and the user has set their name first.
+        const prof = await ensureMyProfile()
+        if (prof && !prof.nameConfirmed) {
+          setSuggestedName(prof.displayName || '')
+          setNeedsName(true)
+          return
+        }
 
-        if (groups.length === 0) { setNeedsGroup(true); return }
-
-        // Resolve the active group: server-remembered first, then localStorage,
-        // else the first group. Falls back gracefully if that group is gone.
-        const serverLast = await fetchLastGroup()
-        const localLast = uid ? localStorage.getItem(`lockroom-active-${uid}`) : null
-        const active = groups.find(g => g.id === serverLast) ?? groups.find(g => g.id === localLast) ?? groups[0]
-        if (uid) localStorage.setItem(`lockroom-active-${uid}`, active.id)
-        setLastGroup(active.id)
-        setGroupId(active.id); setGroupName(active.name); setGroupCode(active.code)
-        await loadGroup(active.id)
+        if (uid) await resolveGroups(uid)
       } catch (e) {
         console.warn('[AppProvider] Supabase load failed:', e)
         setNeedsGroup(true)
@@ -371,7 +430,15 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     }
 
     load()
-  }, [loadGroup])
+  }, [resolveGroups])
+
+  const handleNameDone = useCallback(async (name: string) => {
+    setLoading(true)
+    await setDisplayName(name)
+    setNeedsName(false)
+    if (myId) await resolveGroups(myId)
+    setLoading(false)
+  }, [myId, resolveGroups])
 
   // Live sync: refetch when anyone in the group changes bets/reactions/comments,
   // plus on window focus and a slow poll as a fallback if realtime isn't enabled.
@@ -403,14 +470,16 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
 
   const handleGroupReady = useCallback(async (id: string, name: string, code: string) => {
     setGroupId(id); setGroupName(name); setGroupCode(code)
-    setNeedsGroup(false); setAddingGroup(false)
     if (myId) localStorage.setItem(`lockroom-active-${myId}`, id)
+    // Load the group's data FIRST, then flip to the app — otherwise the app
+    // renders before data is ready (blank screen until refresh).
     if (SUPABASE_READY) {
       setLastGroup(id)
       const groups = await fetchMyGroups()
       setMyGroups(groups)
       await loadGroup(id)
     }
+    setNeedsGroup(false); setAddingGroup(false)
   }, [loadGroup, myId])
 
   const switchGroup = useCallback(async (id: string) => {
@@ -498,13 +567,14 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     </div>
   )
 
+  if (needsName) return <NameSetupPage suggested={suggestedName} onDone={handleNameDone} />
   if (needsGroup) return <GroupSetupPage onGroup={handleGroupReady} />
   if (addingGroup) return <GroupSetupPage onGroup={handleGroupReady} onCancel={() => setAddingGroup(false)} />
 
   return (
     <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, leaveGroup, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
-        {children}
+        <ErrorBoundary>{children}</ErrorBoundary>
       </div>
     </AppCtx.Provider>
   )
