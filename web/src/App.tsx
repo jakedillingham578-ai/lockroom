@@ -2476,10 +2476,19 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
   for (const g of games) { const k = dayKey(g.date); (byDay[k] ??= []).push(g) }
   const days = Object.keys(byDay).sort()
 
-  // My picks + teams I've already used (can't reuse across days)
+  // My picks by day
   const myPickByDay: Record<string, { gameId: string; pick: string }> = {}
   allPicks.filter(p => p.userId === me.id).forEach(p => { myPickByDay[p.day] = { gameId: p.gameId, pick: p.pick } })
-  const myUsedTeams = new Set(Object.values(myPickByDay).map(p => p.pick))
+
+  // The featured "game of the day" — the same marquee matchup everyone is
+  // asked about. Deterministic so all members see the identical game.
+  const SPORT_PRIORITY = ['Soccer', 'NFL', 'CFB', 'NBA', 'NHL', 'MLB', 'MMA', 'Other']
+  const featuredOf = (dayGames: SGame[]) => [...dayGames].sort((a, b) => {
+    const ra = SPORT_PRIORITY.indexOf(a.sport); const rb = SPORT_PRIORITY.indexOf(b.sport)
+    const pa = ra < 0 ? 99 : ra, pb = rb < 0 ? 99 : rb
+    if (pa !== pb) return pa - pb
+    return new Date(a.date).getTime() - new Date(b.date).getTime()
+  })[0]
 
   // Alive/eliminated status: walk each user's picks in day order; a completed
   // pick that didn't win (loss OR draw) knocks them out.
@@ -2502,7 +2511,6 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
 
   const makePick = async (day: string, g: SGame, team: string) => {
     if (!amAlive || g.completed || g.inProgress) return
-    if (myUsedTeams.has(team) && myPickByDay[day]?.pick !== team) return // no reusing a team
     setAllPicks(prev => [...prev.filter(p => !(p.userId === me.id && p.day === day)), { day, gameId: g.id, userId: me.id, pick: team }])
     if (groupId) {
       const { upsertSurvivorPick } = await import('./lib/store')
@@ -2514,7 +2522,7 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Survivor Pool</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>{groupName} · One team per day · Must win or you're out · No reusing teams</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>{groupName} · Same game every day · Guess the winner · Miss and you're out</p>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
         <div style={{ flex: 1, background: C.winBg, border: `1px solid ${C.win}`, borderRadius: 12, padding: '12px', textAlign: 'center' }}>
@@ -2540,55 +2548,61 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
         </div>
       )}
 
-      {/* Days */}
+      {/* One featured game per day */}
       {days.map(day => {
+        const g = featuredOf(byDay[day])
+        if (!g) return null
         const myPick = myPickByDay[day]
+        const w = winnerOf(g)
+        const locked = g.completed || g.inProgress
+        const survived = g.completed && myPick ? w === myPick.pick : null
+        const others = allPicks.filter(p => p.gameId === g.id && p.userId !== me.id)
         return (
-          <div key={day} style={{ marginBottom: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{dayLabel(day)}</div>
-              {myPick && <div style={{ fontSize: 11, fontWeight: 700, color: C.primary }}>Your pick: {myPick.pick}</div>}
-            </div>
-            {byDay[day].map(g => {
-              const w = winnerOf(g)
-              const locked = g.completed || g.inProgress
-              return (
-                <div key={g.id} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 6, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 13, width: 20, textAlign: 'center' }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
-                  {[g.awayTeam, g.homeTeam].map(team => {
-                    const isPicked = myPick?.pick === team
-                    const isWinner = g.completed && w === team
-                    const usedElsewhere = myUsedTeams.has(team) && myPick?.pick !== team
-                    const disabled = locked || !amAlive || usedElsewhere
-                    return (
-                      <button key={team} onClick={() => makePick(day, g, team)} disabled={disabled} style={{
-                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '8px 6px', borderRadius: 9,
-                        border: `1.5px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
+          <div key={day} style={{ marginBottom: 16 }}>
+            <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{dayLabel(day)}</div>
+            <div style={{ background: C.bgCard, border: `1.5px solid ${myPick ? C.primary : C.border}`, borderRadius: 14, padding: '12px 14px' }}>
+              {/* Matchup header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 14 }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.muted }}>{g.sport}</span>
+                <span style={{ fontSize: 11, color: C.muted }}>·</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: g.completed ? C.muted : g.inProgress ? C.loss : C.muted }}>
+                  {g.completed ? 'FINAL' : g.inProgress ? '🔴 LIVE' : new Date(g.date).toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + new Date(g.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                </span>
+              </div>
+              {/* Two winner buttons */}
+              <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
+                {[g.awayTeam, g.homeTeam].map((team, ti) => {
+                  const isPicked = myPick?.pick === team
+                  const isWinner = g.completed && w === team
+                  const disabled = locked || !amAlive
+                  return (
+                    <React.Fragment key={team}>
+                      <button onClick={() => makePick(day, g, team)} disabled={disabled} style={{
+                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '12px 8px', borderRadius: 11,
+                        border: `2px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
                         background: isWinner ? C.winBg : isPicked ? C.primaryBg : C.bgEl,
                         cursor: disabled ? 'default' : 'pointer',
-                        opacity: usedElsewhere ? 0.35 : 1,
                       }}>
-                        <span style={{ fontSize: 12, fontWeight: 800, color: isWinner ? C.win : isPicked ? C.primary : C.text }}>{team}</span>
-                        {g.completed && <span style={{ fontSize: 11, color: C.muted }}>{team === g.homeTeam ? g.homeScore : g.awayScore}</span>}
-                        {usedElsewhere && <span style={{ fontSize: 9, color: C.muted }}>used</span>}
+                        <span style={{ fontSize: 13, fontWeight: 900, color: isWinner ? C.win : isPicked ? C.primary : C.text, textAlign: 'center' }}>{team}</span>
+                        {g.completed
+                          ? <span style={{ fontSize: 16, fontWeight: 900, color: isWinner ? C.win : C.muted }}>{team === g.homeTeam ? g.homeScore : g.awayScore}</span>
+                          : isPicked ? <span style={{ fontSize: 11, color: C.primary, fontWeight: 700 }}>✓ your pick</span> : <span style={{ fontSize: 11, color: C.muted }}>tap to pick</span>}
                       </button>
-                    )
-                  })}
+                      {ti === 0 && <div style={{ display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 900, color: C.muted }}>@</div>}
+                    </React.Fragment>
+                  )
+                })}
+              </div>
+              {/* Result / group pick count */}
+              {survived !== null ? (
+                <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: 'center', color: survived ? C.win : C.loss }}>
+                  {survived ? `✓ You survived` : myPick ? `✗ ${myPick.pick} didn't win — eliminated` : '— you had no pick'}
                 </div>
-              )
-            })}
-            {/* Result for my pick this day */}
-            {myPick && (() => {
-              const g = games.find(x => x.id === myPick.gameId)
-              if (!g || !g.completed) return null
-              const w = winnerOf(g)
-              const survived = w === myPick.pick
-              return (
-                <div style={{ fontSize: 11, fontWeight: 700, color: survived ? C.win : C.loss, padding: '2px 2px' }}>
-                  {survived ? `✓ ${myPick.pick} won — you survived` : `✗ ${myPick.pick} didn't win — eliminated`}
-                </div>
-              )
-            })()}
+              ) : others.length > 0 && (
+                <div style={{ marginTop: 10, fontSize: 11, color: C.muted, textAlign: 'center' }}>{others.length} other {others.length === 1 ? 'member has' : 'members have'} picked</div>
+              )}
+            </div>
           </div>
         )
       })}
