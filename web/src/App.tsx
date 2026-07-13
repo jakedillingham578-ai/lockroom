@@ -1048,7 +1048,7 @@ function GroupSwitcher({ onClose }: { onClose: () => void }) {
 }
 
 function HomePage() {
-  const { me, bets, groupName } = useApp()
+  const { me, bets, users, groupName } = useApp()
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const now = Date.now()
@@ -1070,7 +1070,7 @@ function HomePage() {
     <div>
       {switcherOpen && <GroupSwitcher onClose={() => setSwitcherOpen(false)} />}
       <div style={{ background: 'rgba(75,156,211,0.15)', backdropFilter: 'blur(12px)', borderRadius: 20, padding: '20px 20px 16px', marginBottom: 16, color: C.text, border: `1px solid rgba(75,156,211,0.3)`, boxShadow: '0 4px 20px rgba(75,156,211,0.15)' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: C.text }}>@{me.username}</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: C.text }}>{me.displayName}</h1>
         <div style={{ fontSize: 13, color: C.muted }}>{groupName} · Personal record</div>
         <div style={{ display: 'flex', gap: 16, marginTop: 14 }}>
           {[
@@ -1096,7 +1096,7 @@ function HomePage() {
               <span style={{ fontWeight: 800, fontSize: 14, color: C.text }}>🎰 {groupName}</span>
               <span style={{ fontSize: 11, color: C.primary }}>▾</span>
             </button>
-            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>Tap to switch groups</div>
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{users.length} {users.length === 1 ? 'member' : 'members'} · Tap to switch</div>
           </div>
           <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>{{ weekly: 'This Week', monthly: 'This Month', yearly: 'This Year' }[period]} · Group Record</span>
         </div>
@@ -2131,7 +2131,7 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, groupCode, groupName, upgradePro, signOut, darkMode, toggleDark, leaveGroup } = useApp()
+  const { me, bets, users, groupCode, groupName, upgradePro, signOut, darkMode, toggleDark, leaveGroup } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
   const [copied, setCopied] = useState(false)
   const [confirmLeave, setConfirmLeave] = useState(false)
@@ -2194,7 +2194,7 @@ function ProfilePage() {
         <div>
           <span style={{ fontSize: 16, marginRight: 8 }}>🎰</span>
           <span style={{ fontWeight: 700 }}>{groupName}</span>
-          <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Code: <span style={{ color: C.primary, fontWeight: 700 }}>{groupCode}</span></div>
+          <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>{users.length} {users.length === 1 ? 'member' : 'members'} · Code: <span style={{ color: C.primary, fontWeight: 700 }}>{groupCode}</span></div>
         </div>
         <button onClick={shareInvite} style={{ background: C.primaryBg, border: `1px solid ${C.primary}`, borderRadius: 10, padding: '7px 14px', cursor: 'pointer', color: C.primary, fontSize: 13, fontWeight: 700 }}>
           {copied ? '✓ Copied!' : '🔗 Invite'}
