@@ -135,7 +135,7 @@ const SEED_BETS: Bet[] = [
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 interface Ctx {
-  me: User; users: User[]; bets: Bet[]; groupCode: string; groupName: string
+  me: User; users: User[]; bets: Bet[]; groupCode: string; groupName: string; groupId: string | null
   addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => void
   settleBet: (id: string, s: 'won' | 'lost' | 'push') => void
   getUserById: (id: string) => User | undefined
@@ -436,7 +436,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   if (needsGroup) return <GroupSetupPage onGroup={handleGroupReady} />
 
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
         {children}
       </div>
@@ -2269,22 +2269,74 @@ function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
   )
 }
 
-function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
-  const { groupName } = useApp()
-  const [picks, setPicks] = useState<Record<string, string>>({})
-  const games = [
-    { id: 'g1', home: 'Chiefs', away: 'Bills', time: 'Thu · 8:15 PM', sport: '🏈', spread: '-3.5' },
-    { id: 'g2', home: 'Eagles', away: 'Cowboys', time: 'Sun · 4:25 PM', sport: '🏈', spread: '-6' },
-    { id: 'g3', home: 'Ravens', away: 'Steelers', time: 'Sun · 1:00 PM', sport: '🏈', spread: '-7' },
-    { id: 'g4', home: 'Packers', away: 'Bears', time: 'Mon · 8:15 PM', sport: '🏈', spread: '-4' },
-    { id: 'g5', home: 'Celtics', away: 'Lakers', time: 'Tue · 7:30 PM', sport: '🏀', spread: '-5.5' },
-  ]
-  const madeCount = Object.keys(picks).length
-  const submitted = madeCount === games.length
-  const pct = Math.round((madeCount / games.length) * 100)
+const SPORT_EMOJI: Record<string, string> = {
+  NFL: '🏈', CFB: '🏈', NBA: '🏀', MLB: '⚾', NHL: '🏒', Soccer: '⚽', MMA: '🥊', Other: '🎯',
+}
 
-  // Standings built from the real group members (0 correct until games are graded)
-  const leaderboard = users.map(u => ({ user: u, correct: 0 }))
+function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
+  const { groupName, me, groupId } = useApp()
+  type PGame = import('./lib/odds').ESPNGame
+  const [games, setGames] = useState<PGame[]>([])
+  const [myPicks, setMyPicks] = useState<Record<string, string>>({})   // gameId → team
+  const [allPicks, setAllPicks] = useState<{ gameId: string; userId: string; pick: string }[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    try {
+      const [odds, store] = await Promise.all([import('./lib/odds'), import('./lib/store')])
+      const g = await odds.fetchPickemGames()
+      const picks = groupId ? await store.fetchPickemPicks(groupId) : []
+      setGames(g)
+      setAllPicks(picks)
+      const mine: Record<string, string> = {}
+      picks.filter(p => p.userId === me.id).forEach(p => { mine[p.gameId] = p.pick })
+      setMyPicks(mine)
+    } catch (e) {
+      console.warn('[pickem] load failed', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [groupId, me.id])
+
+  useEffect(() => { load() }, [load])
+
+  const winnerOf = (g: PGame): string | null => {
+    if (!g.completed || g.homeScore == null || g.awayScore == null) return null
+    if (g.homeScore === g.awayScore) return 'DRAW'
+    return g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam
+  }
+
+  const makePick = async (g: PGame, team: string) => {
+    if (g.completed || g.inProgress) return  // locked once it starts
+    setMyPicks(p => ({ ...p, [g.id]: team }))
+    setAllPicks(prev => [...prev.filter(p => !(p.userId === me.id && p.gameId === g.id)), { gameId: g.id, userId: me.id, pick: team }])
+    if (groupId) {
+      const { upsertPickemPick } = await import('./lib/store')
+      await upsertPickemPick(groupId, me.id, g.id, team)
+    }
+  }
+
+  const openGames = games.filter(g => !g.completed)
+  const madeCount = openGames.filter(g => myPicks[g.id]).length
+
+  // Standings: correct picks among completed games, per member
+  const standings = users.map(u => {
+    let correct = 0, graded = 0
+    for (const g of games) {
+      if (!g.completed) continue
+      const w = winnerOf(g)
+      const p = allPicks.find(x => x.userId === u.id && x.gameId === g.id)
+      if (!p) continue
+      graded++
+      if (w && w !== 'DRAW' && w === p.pick) correct++
+    }
+    return { user: u, correct, graded }
+  }).sort((a, b) => b.correct - a.correct || b.graded - a.graded)
+
+  const fmtTime = (iso: string) => {
+    const d = new Date(iso)
+    return d.toLocaleDateString('en-US', { weekday: 'short' }) + ' · ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  }
 
   return (
     <div>
@@ -2292,105 +2344,98 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
 
       {/* Header */}
       <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: '16px 18px', marginBottom: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <h2 style={{ fontSize: 20, fontWeight: 900, marginBottom: 2 }}>Weekly Pick'em</h2>
-            <p style={{ color: C.muted, fontSize: 12 }}>{groupName} · Week of June 16</p>
+            <p style={{ color: C.muted, fontSize: 12 }}>{groupName} · Pick winners · Live from ESPN</p>
           </div>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: submitted ? C.win : C.primary }}>{madeCount}/{games.length}</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: C.primary }}>{madeCount}/{openGames.length}</div>
             <div style={{ fontSize: 10, color: C.muted, fontWeight: 600, textTransform: 'uppercase' }}>Picks made</div>
           </div>
         </div>
-        {/* Progress bar */}
-        <div style={{ background: C.bgEl, borderRadius: 99, height: 6, overflow: 'hidden' }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: submitted ? C.win : C.primary, borderRadius: 99, transition: 'width 0.3s ease' }} />
-        </div>
       </div>
+
+      {loading && <div style={{ textAlign: 'center', color: C.muted, padding: '30px 0' }}>Loading games…</div>}
+
+      {!loading && games.length === 0 && (
+        <div style={{ textAlign: 'center', color: C.muted, padding: '30px 16px', background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14 }}>
+          No games scheduled in the next few days. Check back closer to game day.
+        </div>
+      )}
 
       {/* Games */}
       {games.map(g => {
-        const picked = picks[g.id]
+        const picked = myPicks[g.id]
+        const w = winnerOf(g)
+        const locked = g.completed || g.inProgress
         return (
-          <div key={g.id} style={{
-            background: C.bgCard,
-            border: `1.5px solid ${picked ? C.primary : C.border}`,
-            borderRadius: 14, marginBottom: 8, overflow: 'hidden',
-          }}>
-            {/* Single horizontal row */}
+          <div key={g.id} style={{ background: C.bgCard, border: `1.5px solid ${picked ? C.primary : C.border}`, borderRadius: 14, marginBottom: 8, overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', gap: 8 }}>
-              {/* Away team button */}
-              {[g.away, g.home].map((team, ti) => {
+              {[g.awayTeam, g.homeTeam].map((team, ti) => {
                 const isPicked = picked === team
+                const isWinner = g.completed && w === team
                 const otherPicked = picked && picked !== team
                 return (
                   <React.Fragment key={team}>
-                    <button onClick={() => setPicks(p => ({ ...p, [g.id]: team }))} style={{
+                    <button onClick={() => makePick(g, team)} disabled={locked} style={{
                       flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                       padding: '8px 10px', borderRadius: 10,
-                      border: `1.5px solid ${isPicked ? C.primary : C.border}`,
-                      background: isPicked ? C.primaryBg : C.bgEl,
-                      cursor: 'pointer', opacity: otherPicked ? 0.4 : 1, transition: 'all 0.15s',
+                      border: `1.5px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
+                      background: isWinner ? C.winBg : isPicked ? C.primaryBg : C.bgEl,
+                      cursor: locked ? 'default' : 'pointer', opacity: otherPicked && !g.completed ? 0.4 : 1, transition: 'all 0.15s',
                     }}>
-                      <span style={{ fontSize: 14, fontWeight: 900, color: isPicked ? C.primary : C.text }}>{team}</span>
-                      {isPicked && <span style={{ fontSize: 12, color: C.primary }}>✓</span>}
+                      <span style={{ fontSize: 13, fontWeight: 900, color: isWinner ? C.win : isPicked ? C.primary : C.text }}>{team}</span>
+                      {g.completed && team === g.homeTeam && <span style={{ fontSize: 11, color: C.muted }}>{g.homeScore}</span>}
+                      {g.completed && team === g.awayTeam && <span style={{ fontSize: 11, color: C.muted }}>{g.awayScore}</span>}
+                      {isPicked && !g.completed && <span style={{ fontSize: 12, color: C.primary }}>✓</span>}
                     </button>
                     {ti === 0 && (
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                        <span style={{ fontSize: 9, color: C.muted, fontWeight: 700 }}>{g.sport}</span>
-                        <span style={{ fontSize: 10, fontWeight: 900, color: C.muted }}>VS</span>
-                        <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>{g.time}</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, flexShrink: 0, width: 54 }}>
+                        <span style={{ fontSize: 12 }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
+                        {g.completed
+                          ? <span style={{ fontSize: 9, fontWeight: 900, color: C.muted }}>FINAL</span>
+                          : g.inProgress
+                            ? <span style={{ fontSize: 9, fontWeight: 900, color: C.loss }}>🔴 LIVE</span>
+                            : <span style={{ fontSize: 9, fontWeight: 900, color: C.muted }}>VS</span>}
+                        <span style={{ fontSize: 8, color: C.muted, fontWeight: 600, textAlign: 'center' }}>{g.completed || g.inProgress ? '' : fmtTime(g.date)}</span>
                       </div>
                     )}
                   </React.Fragment>
                 )
               })}
             </div>
+            {/* Result footer: was my pick right? */}
+            {g.completed && picked && (
+              <div style={{ padding: '6px 12px', fontSize: 11, fontWeight: 700, background: w === 'DRAW' ? C.pushBg : w === picked ? C.winBg : C.lossBg, color: w === 'DRAW' ? C.push : w === picked ? C.win : C.loss }}>
+                {w === 'DRAW' ? '➖ Draw — no result' : w === picked ? '✓ You got it right' : '✗ You missed this one'}
+              </div>
+            )}
           </div>
         )
       })}
 
-      {/* Lock in button */}
-      <button onClick={() => submitted && alert('Picks locked in! 🔒')} style={{
-        ...btnStyle, width: '100%', padding: '14px 0', marginTop: 4,
-        opacity: submitted ? 1 : 0.5,
-        background: submitted ? C.win : C.primary,
-      }}>
-        {submitted ? '🔒 Lock In Picks' : `${games.length - madeCount} pick${games.length - madeCount !== 1 ? 's' : ''} remaining`}
-      </button>
-
-      {/* Leaderboard */}
-      <div style={{ marginTop: 28 }}>
-        <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>This Week's Standings</div>
-        {leaderboard.map((row, i) => {
-          const rankColors = ['#B45309', C.muted, C.muted]
-          const rankEmoji = ['🥇', '🥈', '🥉']
-          const isTop3 = i < 3
-          return (
-            <div key={row.user.id} style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              background: i === 0 ? C.goldBg : C.bgCard,
-              border: `1px solid ${i === 0 ? C.gold : C.border}`,
-              borderRadius: 12, padding: '11px 14px', marginBottom: 8,
-            }}>
-              <div style={{ fontSize: isTop3 ? 18 : 13, width: 24, textAlign: 'center', fontWeight: 700, color: rankColors[i] ?? C.muted }}>
-                {isTop3 ? rankEmoji[i] : `#${i + 1}`}
+      {/* Standings */}
+      {standings.some(s => s.graded > 0) && (
+        <div style={{ marginTop: 28 }}>
+          <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Standings</div>
+          {standings.map((row, i) => {
+            const rankEmoji = ['🥇', '🥈', '🥉']
+            const isTop3 = i < 3
+            return (
+              <div key={row.user.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: i === 0 ? C.goldBg : C.bgCard, border: `1px solid ${i === 0 ? C.gold : C.border}`, borderRadius: 12, padding: '11px 14px', marginBottom: 8 }}>
+                <div style={{ fontSize: isTop3 ? 18 : 13, width: 24, textAlign: 'center', fontWeight: 700, color: C.muted }}>{isTop3 ? rankEmoji[i] : `#${i + 1}`}</div>
+                <Avatar name={row.user.displayName} size={30} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{row.user.displayName}{row.user.id === me.id ? ' (you)' : ''}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{row.correct}/{row.graded} correct</div>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 900, color: C.primary }}>{row.graded > 0 ? `${Math.round((row.correct / row.graded) * 100)}%` : '—'}</div>
               </div>
-              <Avatar name={row.user.displayName} size={30} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, fontSize: 13 }}>{row.user.displayName}</div>
-                <div style={{ fontSize: 11, color: C.muted }}>{row.correct}/{games.length} correct</div>
-              </div>
-              {/* mini bar */}
-              <div style={{ display: 'flex', gap: 3 }}>
-                {Array.from({ length: games.length }).map((_, gi) => (
-                  <div key={gi} style={{ width: 8, height: 8, borderRadius: 2, background: gi < row.correct ? C.win : C.bgEl }} />
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

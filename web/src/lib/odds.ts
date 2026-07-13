@@ -85,6 +85,48 @@ export function recentDateRange(daysBack = 4): string {
   return `${fmt(start)}-${fmt(end)}`
 }
 
+// A range spanning both directions from today.
+export function dateRange(daysBack: number, daysForward: number): string {
+  const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '')
+  return `${fmt(new Date(Date.now() - daysBack * 864e5))}-${fmt(new Date(Date.now() + daysForward * 864e5))}`
+}
+
+// Curated pool of games for Weekly Pick'em: upcoming games to pick from,
+// plus recently-finished ones so results can be graded and shown.
+export async function fetchPickemGames(): Promise<ESPNGame[]> {
+  const all = await fetchAllScoreboards(dateRange(2, 7))
+  const seen = new Set<string>()
+  const uniq = all.filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)))
+  const now = Date.now()
+
+  // Upcoming games, capped per-sport so a high-volume league (e.g. MLB)
+  // doesn't crowd out the World Cup / MLS / etc.
+  const PER_SPORT = 3
+  const perSportCount: Record<string, number> = {}
+  const upcoming = uniq
+    .filter(g => !g.completed)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .filter(g => {
+      perSportCount[g.sport] = (perSportCount[g.sport] ?? 0) + 1
+      return perSportCount[g.sport] <= PER_SPORT
+    })
+    .slice(0, 12)
+
+  const recent = uniq
+    .filter(g => g.completed && (now - new Date(g.date).getTime()) < 3 * 864e5)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, 5)
+
+  return [...recent, ...upcoming].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+}
+
+// Winner of a completed game, or 'DRAW', or null if not final.
+export function gameWinner(g: ESPNGame): string | null {
+  if (!g.completed || g.homeScore == null || g.awayScore == null) return null
+  if (g.homeScore === g.awayScore) return 'DRAW'
+  return g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam
+}
+
 // Fetch the scoreboard for a sport across ALL its leagues (optionally for a date range).
 export async function fetchScoreboard(sportLabel: string, dates?: string): Promise<ESPNGame[]> {
   const path = ESPN_PATHS[sportLabel]

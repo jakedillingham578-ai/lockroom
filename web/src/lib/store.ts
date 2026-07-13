@@ -134,8 +134,27 @@ export async function insertComment(betId: string, userId: string, text: string)
   return { id: data.id, userId: data.user_id, text: data.text, createdAt: new Date(data.created_at) }
 }
 
+// ── Pick'em ──────────────────────────────────────────────────
+export async function fetchPickemPicks(groupId: string): Promise<{ gameId: string; userId: string; pick: string }[]> {
+  if (!SUPABASE_READY) return []
+  const { data, error } = await supabase
+    .from('pickem_picks')
+    .select('*')
+    .eq('group_id', groupId)
+  if (error) { console.error('[store] fetchPickemPicks:', error.message); return [] }
+  return (data ?? []).map((r: any) => ({ gameId: r.game_id, userId: r.user_id, pick: r.pick }))
+}
+
+export async function upsertPickemPick(groupId: string, userId: string, gameId: string, pick: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  const { error } = await supabase
+    .from('pickem_picks')
+    .upsert({ group_id: groupId, user_id: userId, game_id: gameId, pick }, { onConflict: 'group_id,user_id,game_id' })
+  if (error) console.error('[store] upsertPickemPick:', error.message)
+}
+
 // ── Realtime ─────────────────────────────────────────────────
-// Fires onChange whenever bets/reactions/comments change. Returns an unsubscribe fn.
+// Fires onChange whenever bets/reactions/comments/picks change. Returns an unsubscribe fn.
 export function subscribeToGroup(groupId: string, onChange: () => void): () => void {
   if (!SUPABASE_READY) return () => {}
   const channel = supabase
@@ -143,6 +162,7 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bets', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_reactions' }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_comments' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pickem_picks', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members', filter: `group_id=eq.${groupId}` }, onChange)
     .subscribe()
   return () => { supabase.removeChannel(channel) }
