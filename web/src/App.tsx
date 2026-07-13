@@ -31,7 +31,7 @@ interface Comment { id: string; userId: string; text: string; createdAt: Date }
 interface Bet {
   id: string; userId: string; sport: Sport; type: BetType
   description: string; odds: number; stake: number; status: Status
-  bookmaker: string; createdAt: Date; settledAt?: Date
+  bookmaker: string; createdAt: Date; settledAt?: Date; gameId?: string | null
   reactions?: Reaction[]; comments?: Comment[]
 }
 
@@ -355,6 +355,23 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     window.addEventListener('focus', refetch)
     const poll = setInterval(refetch, 20000)
     return () => { unsub(); window.removeEventListener('focus', refetch); clearInterval(poll) }
+  }, [groupId, loadGroup])
+
+  // Auto-settle: for bets linked to a real game, check ESPN scores and mark
+  // won/lost/push automatically. Runs on load and every 2 minutes.
+  useEffect(() => {
+    if (!SUPABASE_READY || !groupId) return
+    let cancelled = false
+    const runSettle = async () => {
+      try {
+        const { settlePendingBets } = await import('./lib/settlement')
+        const { settled } = await settlePendingBets()
+        if (!cancelled && settled > 0) loadGroup(groupId)
+      } catch (e) { console.warn('[settlement]', e) }
+    }
+    runSettle()
+    const iv = setInterval(runSettle, 120000)
+    return () => { cancelled = true; clearInterval(iv) }
   }, [groupId, loadGroup])
 
   const handleGroupReady = useCallback(async (id: string, name: string, code: string) => {
@@ -1711,7 +1728,7 @@ function AddBetPage() {
     else if (type === 'moneyline') finalDesc = [mlTeam, 'ML', mlOpp ? `vs ${mlOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'over_under') finalDesc = [ouMatchup, ouDir, ouTotal].filter(Boolean).join(' ')
     if (!finalDesc || !odds || !stake) return alert('Fill in description, odds, and stake.')
-    addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book })
+    addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null })
     setDone(true)
     setTimeout(() => { setDone(false); nav('/') }, 2000)
   }

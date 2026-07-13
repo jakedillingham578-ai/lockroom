@@ -2,7 +2,7 @@
 // Auto-settlement engine — powered by ESPN free API (no key needed)
 
 import { supabase } from './supabase'
-import { fetchAllScoreboards, type ESPNGame } from './odds'
+import { fetchAllScoreboards, recentDateRange, type ESPNGame } from './odds'
 
 type BetRow = {
   id: string
@@ -68,20 +68,25 @@ export async function settlePendingBets(): Promise<{ settled: number; errors: st
   const errors: string[] = []
   let settled = 0
 
-  // Fetch pending bets with linked games
-  const { data: bets, error } = await supabase
+  // Only settle the current user's own bets (RLS allows updating own rows only).
+  const { data: { user } } = await supabase.auth.getUser()
+
+  let query = supabase
     .from('bets')
     .select('*')
     .eq('status', 'pending')
     .not('game_id', 'is', null)
+  if (user) query = query.eq('user_id', user.id)
 
+  const { data: bets, error } = await query
   if (error) return { settled: 0, errors: [error.message] }
   if (!bets?.length) return { settled: 0, errors: [] }
 
-  // Fetch all completed games from ESPN (free, no key)
+  // Fetch completed games from ESPN (free, no key) over the last few days
+  // so recently-finished games are still in the feed.
   let games: ESPNGame[] = []
   try {
-    games = await fetchAllScoreboards()
+    games = await fetchAllScoreboards(recentDateRange(5))
   } catch (e: any) {
     return { settled: 0, errors: [`ESPN fetch failed: ${e.message}`] }
   }
