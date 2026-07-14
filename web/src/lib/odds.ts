@@ -10,7 +10,11 @@ export const ESPN_PATHS: Record<string, { sport: string; leagues: string[] }> = 
   NFL:    { sport: 'football',   leagues: ['nfl'] },
   CFB:    { sport: 'football',   leagues: ['college-football'] },
   NBA:    { sport: 'basketball', leagues: ['nba'] },
+  WNBA:   { sport: 'basketball', leagues: ['wnba'] },
+  NCAAM:  { sport: 'basketball', leagues: ['mens-college-basketball'] },
+  NCAAW:  { sport: 'basketball', leagues: ['womens-college-basketball'] },
   MLB:    { sport: 'baseball',   leagues: ['mlb'] },
+  CBB:    { sport: 'baseball',   leagues: ['college-baseball'] },
   NHL:    { sport: 'hockey',     leagues: ['nhl'] },
   Soccer: { sport: 'soccer',     leagues: [
     'fifa.world',        // FIFA Men's World Cup
@@ -208,10 +212,17 @@ export async function fetchAllScoreboards(dates?: string): Promise<ESPNGame[]> {
     .flatMap(r => r.value)
 }
 
-// Search games by team name across all sports (for Add Bet flow)
+// Search games by team name across all sports (for Add Bet flow).
+// IMPORTANT: always pass a date range. Without one, ESPN's "current"
+// scoreboard for a league with no games right now (e.g. Euros/Women's World
+// Cup outside their tournament window) silently falls back to the LAST
+// match ever played — sometimes years old — which looked like a live/
+// upcoming game. A bounded window makes those leagues correctly return
+// nothing when nothing's actually on.
 export async function searchGames(query: string, sportLabel?: string): Promise<ESPNGame[]> {
   const sports = sportLabel ? [sportLabel] : Object.keys(ESPN_PATHS)
-  const results = await Promise.allSettled(sports.map(s => fetchScoreboard(s)))
+  const window = dateRange(3, 14)
+  const results = await Promise.allSettled(sports.map(s => fetchScoreboard(s, window)))
   const games = results
     .filter((r): r is PromiseFulfilledResult<ESPNGame[]> => r.status === 'fulfilled')
     .flatMap(r => r.value)

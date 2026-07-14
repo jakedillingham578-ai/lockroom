@@ -9,7 +9,7 @@ const SUPABASE_READY =
   import.meta.env.VITE_SUPABASE_URL !== 'YOUR_SUPABASE_URL_HERE'
 
 export type Status   = 'pending' | 'won' | 'lost' | 'push'
-export type Sport    = 'NFL' | 'NBA' | 'MLB' | 'NHL' | 'CFB' | 'Soccer' | 'MMA' | 'Other'
+export type Sport    = 'NFL' | 'NBA' | 'WNBA' | 'MLB' | 'NHL' | 'CFB' | 'NCAAM' | 'NCAAW' | 'CBB' | 'Soccer' | 'MMA' | 'Other'
 export type BetType  = 'spread' | 'moneyline' | 'over_under' | 'parlay' | 'prop' | 'other'
 
 export interface Bet {

@@ -19,7 +19,7 @@ const C = {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Status = 'pending' | 'won' | 'lost' | 'push'
-type Sport = 'NFL' | 'NBA' | 'MLB' | 'NHL' | 'CFB' | 'Soccer' | 'MMA' | 'Other'
+type Sport = 'NFL' | 'NBA' | 'WNBA' | 'MLB' | 'NHL' | 'CFB' | 'NCAAM' | 'NCAAW' | 'CBB' | 'Soccer' | 'MMA' | 'Other'
 type BetType = 'spread' | 'moneyline' | 'over_under' | 'parlay' | 'prop' | 'other'
 
 const REACTION_EMOJIS = ['🔥', '🤡', '👀', '💀', '🎯'] as const
@@ -1868,7 +1868,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
 }
 
 // ─── Add Bet ──────────────────────────────────────────────────────────────────
-const SPORTS: Sport[] = ['NFL', 'NBA', 'MLB', 'NHL', 'CFB', 'Soccer', 'MMA', 'Other']
+const SPORTS: Sport[] = ['NFL', 'NBA', 'WNBA', 'MLB', 'NHL', 'CFB', 'NCAAM', 'NCAAW', 'CBB', 'Soccer', 'MMA', 'Other']
 const BET_TYPES: [BetType, string][] = [['spread', 'Spread'], ['moneyline', 'ML'], ['over_under', 'O/U'], ['parlay', 'Parlay'], ['prop', 'Prop'], ['other', 'Other']]
 const BOOKS = ['DraftKings', 'FanDuel', 'BetMGM', 'Caesars', 'ESPN Bet', 'Kalshi', 'Polymarket', 'Other']
 
@@ -2599,7 +2599,7 @@ function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
 }
 
 const SPORT_EMOJI: Record<string, string> = {
-  NFL: '🏈', CFB: '🏈', NBA: '🏀', MLB: '⚾', NHL: '🏒', Soccer: '⚽', MMA: '🥊', Other: '🎯',
+  NFL: '🏈', CFB: '🏈', NBA: '🏀', WNBA: '🏀', NCAAM: '🏀', NCAAW: '🏀', MLB: '⚾', CBB: '⚾', NHL: '🏒', Soccer: '⚽', MMA: '🥊', Other: '🎯',
 }
 
 // Deterministic "game of the day" — marquee sport priority, then earliest.
