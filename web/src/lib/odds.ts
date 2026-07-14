@@ -209,7 +209,11 @@ export async function fetchScoreboard(sportLabel: string, dates?: string): Promi
     .flatMap(r => r.value)
   // De-dupe by ESPN event id (leagues shouldn't overlap, but be safe)
   const seen = new Set<string>()
-  return games.filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)))
+  return games
+    .filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)))
+    // Drop placeholder bracket slots (e.g. future playoff games where the
+    // matchup isn't determined yet) — "TBD @ TBD" isn't a real bettable game.
+    .filter(g => g.homeTeam && g.awayTeam && g.homeTeam !== 'TBD' && g.awayTeam !== 'TBD')
 }
 
 // Fetch scoreboards for all sports (used by settlement engine)
