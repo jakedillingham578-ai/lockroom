@@ -641,7 +641,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 const fmtOdds = (o: number) => o > 0 ? `+${o}` : `${o}`
-const fmtMoney = (n: number) => `${n >= 0 ? '+' : ''}$${Math.abs(n).toFixed(0)}`
+const fmtMoney = (n: number) => `${n >= 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`
 const timeAgo = (d: Date) => {
   const s = (Date.now() - d.getTime()) / 1000
   if (s < 60) return 'just now'
@@ -1217,7 +1217,7 @@ function HomePage() {
         <div style={{ display: 'flex', gap: 16, marginTop: 14 }}>
           {[
             { label: 'Record', val: `${me.stats.wins}W`, val2: `-${me.stats.losses}L`, color1: '#4ade80', color2: '#f87171' },
-            { label: 'Profit', val: `${me.stats.totalProfit >= 0 ? '+' : ''}$${me.stats.totalProfit}`, color1: me.stats.totalProfit >= 0 ? '#4ade80' : '#f87171' },
+            { label: 'Profit', val: `${me.stats.totalProfit >= 0 ? '+' : ''}$${me.stats.totalProfit.toFixed(2)}`, color1: me.stats.totalProfit >= 0 ? '#4ade80' : '#f87171' },
             { label: 'ROI', val: `${me.stats.roi >= 0 ? '+' : ''}${me.stats.roi.toFixed(1)}%`, color1: me.stats.roi >= 0 ? '#4ade80' : '#f87171' },
           ].map(s => (
             <div key={s.label} style={{ background: 'rgba(75,156,211,0.08)', borderRadius: 10, padding: '6px 12px', border: `1px solid ${C.border}` }}>
@@ -1254,7 +1254,7 @@ function HomePage() {
           {[
             { label: 'Record', val: <><span style={{ color: '#4ade80' }}>{groupRecord.wins}W</span><span style={{ color: C.muted }}> - </span><span style={{ color: '#f87171' }}>{groupRecord.losses}L</span></> },
             { label: 'Win %', val: <span style={{ color: groupRecord.wins / Math.max(groupRecord.wins + groupRecord.losses, 1) >= 0.5 ? '#4ade80' : '#f87171' }}>{groupRecord.wins + groupRecord.losses > 0 ? ((groupRecord.wins / (groupRecord.wins + groupRecord.losses)) * 100).toFixed(1) : '0.0'}%</span> },
-            { label: 'Group P&L', val: <span style={{ color: groupRecord.profit >= 0 ? '#4ade80' : '#f87171' }}>{groupRecord.profit >= 0 ? '+' : ''}${groupRecord.profit.toFixed(0)}</span> },
+            { label: 'Group P&L', val: <span style={{ color: groupRecord.profit >= 0 ? '#4ade80' : '#f87171' }}>{groupRecord.profit >= 0 ? '+' : ''}${groupRecord.profit.toFixed(2)}</span> },
           ].map(s => (
             <div key={s.label} style={{ flex: 1, background: C.bgEl, borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{s.label}</div>
@@ -1596,7 +1596,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
                   <Avatar name={u.displayName} size={22} />
                   <span style={{ fontSize: 12, fontWeight: 700 }}>{u.displayName}</span>
                 </div>
-                <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 800, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(0)}</div>
+                <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 800, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
                 <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 700, color: u.roi >= 0 ? C.win : C.loss }}>{u.roi >= 0 ? '+' : ''}{u.roi.toFixed(0)}%</div>
                 <div style={{ textAlign: 'right', fontSize: 11, color: C.muted }}>{u.avgOdds >= 0 ? '+' : ''}{u.avgOdds.toFixed(0)}</div>
                 <div style={{ textAlign: 'right', fontSize: 11, color: C.muted }}>${u.staked.toFixed(0)}</div>
@@ -1694,7 +1694,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 20, fontWeight: 900, color }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(0)}</div>
+                    <div style={{ fontSize: 20, fontWeight: 900, color }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
                     <div style={{ fontSize: 10, color: u.roi >= 0 ? C.win : C.loss, fontWeight: 700 }}>ROI {u.roi >= 0 ? '+' : ''}{u.roi.toFixed(1)}%</div>
                   </div>
                 </div>
@@ -1735,7 +1735,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
                   <div style={{ fontSize: 11, color: C.muted }}>{u.wins}W – {u.losses}L · {u.total} bets</div>
                 </div>
                 <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                  <div style={{ fontSize: 16, fontWeight: 900, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(0)}</div>
+                  <div style={{ fontSize: 16, fontWeight: 900, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
                   <div style={{ fontSize: 10, color: C.muted }}>P&L</div>
                 </div>
               </div>
@@ -1811,7 +1811,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
             const rows = [
               { label: 'Win Rate', aVal: `${(A.winRate * 100).toFixed(1)}%`, bVal: `${(B.winRate * 100).toFixed(1)}%`, aWins: A.winRate >= B.winRate },
               { label: 'ROI', aVal: `${A.roi >= 0 ? '+' : ''}${A.roi.toFixed(1)}%`, bVal: `${B.roi >= 0 ? '+' : ''}${B.roi.toFixed(1)}%`, aWins: A.roi >= B.roi },
-              { label: 'P&L', aVal: `${A.profit >= 0 ? '+' : ''}$${A.profit.toFixed(0)}`, bVal: `${B.profit >= 0 ? '+' : ''}$${B.profit.toFixed(0)}`, aWins: A.profit >= B.profit },
+              { label: 'P&L', aVal: `${A.profit >= 0 ? '+' : ''}$${A.profit.toFixed(2)}`, bVal: `${B.profit >= 0 ? '+' : ''}$${B.profit.toFixed(2)}`, aWins: A.profit >= B.profit },
               { label: 'Record', aVal: `${A.wins}W–${A.losses}L`, bVal: `${B.wins}W–${B.losses}L`, aWins: A.wins >= B.wins },
               { label: 'Avg Odds', aVal: `${A.avgOdds >= 0 ? '+' : ''}${A.avgOdds.toFixed(0)}`, bVal: `${B.avgOdds >= 0 ? '+' : ''}${B.avgOdds.toFixed(0)}`, aWins: A.avgOdds >= B.avgOdds },
               { label: 'Total Risked', aVal: `$${A.staked.toFixed(0)}`, bVal: `$${B.staked.toFixed(0)}`, aWins: A.staked >= B.staked },
@@ -1829,7 +1829,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
                   <div style={{ background: A.profit >= B.profit ? C.winBg : C.bgCard, border: `2px solid ${A.profit >= B.profit ? C.win : C.border}`, borderRadius: 14, padding: '14px', textAlign: 'center' }}>
                     <Avatar name={A.displayName} size={36} />
                     <div style={{ fontWeight: 800, fontSize: 14, marginTop: 6 }}>{A.displayName}</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: A.profit >= 0 ? C.win : C.loss, marginTop: 4 }}>{A.profit >= 0 ? '+' : ''}${A.profit.toFixed(0)}</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: A.profit >= 0 ? C.win : C.loss, marginTop: 4 }}>{A.profit >= 0 ? '+' : ''}${A.profit.toFixed(2)}</div>
                     <div style={{ fontSize: 11, color: C.muted }}>{aEdge} categories won</div>
                   </div>
                   <div style={{ textAlign: 'center' }}>
@@ -1839,7 +1839,7 @@ function ProAnalytics({ sorted, periodBets, users, periodLabel }: { sorted: any[
                   <div style={{ background: B.profit > A.profit ? C.winBg : C.bgCard, border: `2px solid ${B.profit > A.profit ? C.win : C.border}`, borderRadius: 14, padding: '14px', textAlign: 'center' }}>
                     <Avatar name={B.displayName} size={36} />
                     <div style={{ fontWeight: 800, fontSize: 14, marginTop: 6 }}>{B.displayName}</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: B.profit >= 0 ? C.win : C.loss, marginTop: 4 }}>{B.profit >= 0 ? '+' : ''}${B.profit.toFixed(0)}</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: B.profit >= 0 ? C.win : C.loss, marginTop: 4 }}>{B.profit >= 0 ? '+' : ''}${B.profit.toFixed(2)}</div>
                     <div style={{ fontSize: 11, color: C.muted }}>{bEdge} categories won</div>
                   </div>
                 </div>
@@ -2476,7 +2476,7 @@ function BestRecordComp({ users, bets, onBack }: { users: User[], bets: any[], o
             <div style={{ fontWeight: 700, fontSize: 14 }}>{u.displayName}</div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}><span style={{ color: '#4ade80' }}>{u.wins}W</span> - <span style={{ color: '#f87171' }}>{u.losses}L</span></div>
           </div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(0)}</div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
         </div>
       ))}
     </div>
@@ -3076,7 +3076,7 @@ function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], o
               <Sparkline curve={u.curve} color={u.profit >= 0 ? '#4ade80' : '#f87171'} />
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 32, fontWeight: 900, color: u.profit >= 0 ? '#4ade80' : '#f87171' }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(0)}</div>
+              <div style={{ fontSize: 32, fontWeight: 900, color: u.profit >= 0 ? '#4ade80' : '#f87171' }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
               <div style={{ fontSize: 11, opacity: 0.6 }}>net profit</div>
             </div>
           </div>
@@ -3170,7 +3170,7 @@ function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], o
           {[
             { label: 'Total Bets', value: standings.reduce((s, u) => s + u.total, 0) },
             { label: 'Players', value: users.length },
-            { label: 'Leader P&L', value: `${leader?.profit >= 0 ? '+' : ''}$${leader?.profit.toFixed(0) ?? '0'}`, color: leader?.profit >= 0 ? '#4ade80' : '#f87171' },
+            { label: 'Leader P&L', value: `${leader?.profit >= 0 ? '+' : ''}$${leader?.profit.toFixed(2) ?? '0'}`, color: leader?.profit >= 0 ? '#4ade80' : '#f87171' },
           ].map(s => (
             <div key={s.label} style={{ flex: 1, background: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: '12px' }}>
               <div style={{ fontSize: 20, fontWeight: 900, color: (s as any).color ?? '#fff' }}>{s.value}</div>
@@ -3190,7 +3190,7 @@ function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], o
             <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{leader.wins}W–{leader.losses}L · ROI {leader.roi >= 0 ? '+' : ''}{leader.roi.toFixed(1)}% · Win rate {(leader.winRate * 100).toFixed(0)}%</div>
           </div>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: leader.profit >= 0 ? C.win : C.loss }}>{leader.profit >= 0 ? '+' : ''}${leader.profit.toFixed(0)}</div>
+            <div style={{ fontSize: 22, fontWeight: 900, color: leader.profit >= 0 ? C.win : C.loss }}>{leader.profit >= 0 ? '+' : ''}${leader.profit.toFixed(2)}</div>
             <div style={{ fontSize: 10, color: C.muted }}>net profit</div>
           </div>
         </div>
@@ -3218,7 +3218,7 @@ function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], o
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 900, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(0)}</div>
+            <div style={{ fontSize: 17, fontWeight: 900, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
             <div style={{ fontSize: 10, color: C.muted }}>›</div>
           </div>
         </button>
