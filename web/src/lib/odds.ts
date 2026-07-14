@@ -9,7 +9,7 @@ const ESPN = 'https://site.api.espn.com/apis/site/v2/sports'
 export const ESPN_PATHS: Record<string, { sport: string; leagues: string[] }> = {
   NFL:    { sport: 'football',   leagues: ['nfl'] },
   CFB:    { sport: 'football',   leagues: ['college-football'] },
-  NBA:    { sport: 'basketball', leagues: ['nba'] },
+  NBA:    { sport: 'basketball', leagues: ['nba', 'nba-summer', 'nba-summer-california'] },
   WNBA:   { sport: 'basketball', leagues: ['wnba'] },
   NCAAM:  { sport: 'basketball', leagues: ['mens-college-basketball'] },
   NCAAW:  { sport: 'basketball', leagues: ['womens-college-basketball'] },
