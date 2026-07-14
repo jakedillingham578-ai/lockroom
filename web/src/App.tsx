@@ -217,8 +217,24 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
         if (!uid) throw new Error('Your session expired. Please sign in again.')
         const { data, error: err } = await (sb as any).from('groups').insert({ name: groupName.trim(), code, owner_id: uid, max_members: 25 }).select().single()
         if (err) throw err
-        const { error: memErr } = await (sb as any).from('group_members').insert({ group_id: data.id, user_id: uid })
-        if (memErr) throw memErr
+
+        // Re-read uid right before this write too — reduces the window for a
+        // stale/overwritten session (e.g. another account signed in on the
+        // same browser) to cause a uid/token mismatch.
+        const doInsert = async () => {
+          const freshUid = (await currentUid(sb)) ?? uid
+          return (sb as any).from('group_members').insert({ group_id: data.id, user_id: freshUid })
+        }
+        let { error: memErr } = await doInsert()
+        if (memErr) {
+          await sb.auth.refreshSession().catch(() => {})
+          ;({ error: memErr } = await doInsert())
+        }
+        // Confirm membership actually landed — if not, this group is an orphan
+        // the user isn't in; tell them plainly instead of pretending it worked.
+        const { data: check } = await (sb as any).from('group_members').select('group_id').eq('group_id', data.id).eq('user_id', uid).maybeSingle()
+        if (memErr && !check) throw new Error('Group was created but we could not add you to it. Please sign out, sign back in, and try again.')
+
         localStorage.setItem(`lockroom-active-${uid}`, data.id)
         await onGroup(data.id, data.name, data.code)
       } else {
