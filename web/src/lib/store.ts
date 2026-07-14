@@ -295,26 +295,30 @@ export async function fetchGroupByCode(code: string) {
 export async function insertBet(
   bet: Omit<Bet, 'id' | 'createdAt' | 'settledAt'>,
   groupId: string
-): Promise<Bet | null> {
-  if (!SUPABASE_READY) return null
-  const { data, error } = await supabase
-    .from('bets')
-    .insert({
-      user_id:     bet.userId,
-      group_id:    groupId,
-      game_id:     bet.gameId ?? null,
-      sport:       bet.sport,
-      type:        bet.type,
-      description: bet.description,
-      odds:        bet.odds,
-      stake:       bet.stake,
-      status:      bet.status,
-      sportsbook:  bet.bookmaker,
-    })
-    .select()
-    .single()
-  if (error) { console.error('[store] insertBet:', error.message); return null }
-  return rowToBet(data)
+): Promise<{ bet: Bet | null; error: string | null }> {
+  if (!SUPABASE_READY) return { bet: null, error: null }
+  const row = {
+    user_id:     bet.userId,
+    group_id:    groupId,
+    game_id:     bet.gameId ?? null,
+    sport:       bet.sport,
+    type:        bet.type,
+    description: bet.description,
+    odds:        bet.odds,
+    stake:       bet.stake,
+    status:      bet.status,
+    sportsbook:  bet.bookmaker,
+  }
+  const doInsert = () => supabase.from('bets').insert(row).select().single()
+  let { data, error } = await doInsert()
+  if (error) {
+    // Likely a stale/unattached session token (mobile background tabs are
+    // the common trigger) — refresh and retry once before giving up.
+    await supabase.auth.refreshSession().catch(() => {})
+    ;({ data, error } = await doInsert())
+  }
+  if (error) { console.error('[store] insertBet:', error.message); return { bet: null, error: error.message } }
+  return { bet: rowToBet(data), error: null }
 }
 
 export async function updateBetStatus(

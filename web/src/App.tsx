@@ -140,7 +140,7 @@ interface Ctx {
   switchGroup: (id: string) => void
   openAddGroup: () => void
   leaveGroup: () => Promise<void>
-  addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => void
+  addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => Promise<string | null>
   settleBet: (id: string, s: 'won' | 'lost' | 'push') => void
   getUserById: (id: string) => User | undefined
   upgradePro: () => void
@@ -563,16 +563,25 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
 
   const getUserById = useCallback((id: string) => users.find(u => u.id === id), [users])
 
-  const addBet = useCallback(async (b: Omit<Bet, 'id' | 'createdAt'>) => {
+  const addBet = useCallback(async (b: Omit<Bet, 'id' | 'createdAt'>): Promise<string | null> => {
     // Always stamp the bet with the real authenticated id — `me.id` can be a
     // placeholder until members finish loading, which would fail the insert.
     const withUser = { ...b, userId: myId || b.userId }
-    const local: Bet = { ...withUser, id: `b${Date.now()}`, createdAt: new Date(), reactions: [], comments: [] }
+    const localId = `b${Date.now()}`
+    const local: Bet = { ...withUser, id: localId, createdAt: new Date(), reactions: [], comments: [] }
     setBets(prev => [local, ...prev]) // optimistic
+
     if (SUPABASE_READY && groupId && withUser.userId) {
-      await insertBet(withUser, groupId)
+      const { error } = await insertBet(withUser, groupId)
+      if (error) {
+        // Insert genuinely failed — remove the optimistic entry instead of
+        // letting it silently vanish on the next reload with no explanation.
+        setBets(prev => prev.filter(bet => bet.id !== localId))
+        return error
+      }
       await loadGroup(groupId) // reconcile with real row + recompute stats
     }
+    return null
   }, [groupId, loadGroup, myId])
 
   const settleBet = useCallback(async (id: string, s: 'won' | 'lost' | 'push') => {
@@ -1966,14 +1975,19 @@ function AddBetPage() {
   }, [odds, stake])
 
 
-  const submit = () => {
+  const [posting, setPosting] = useState(false)
+
+  const submit = async () => {
     let finalDesc = desc
     if (type === 'parlay') finalDesc = parlayLegs.filter(l => l.trim()).join(' + ')
     else if (type === 'spread') finalDesc = [spreadTeam, spreadLine, spreadOpp ? `vs ${spreadOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'moneyline') finalDesc = [mlTeam, 'ML', mlOpp ? `vs ${mlOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'over_under') finalDesc = [ouMatchup, ouDir, ouTotal].filter(Boolean).join(' ')
     if (!finalDesc || !odds || !stake) return alert('Fill in description, odds, and stake.')
-    addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null })
+    setPosting(true)
+    const error = await addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null })
+    setPosting(false)
+    if (error) { alert(`Couldn't post your bet: ${error}\n\nTry again — if it keeps happening, sign out and back in.`); return }
     setDone(true)
     setTimeout(() => { setDone(false); nav('/') }, 2000)
   }
@@ -2236,8 +2250,8 @@ function AddBetPage() {
 
       <ChipRow label="Sportsbook" options={BOOKS} value={book} onChange={setBook} />
 
-      <button onClick={submit} style={{ ...btnStyle, width: '100%', padding: '14px 0', fontSize: 16, marginTop: 8, boxShadow: `0 4px 20px rgba(0,212,255,0.3)` }}>
-        Post Bet to Group 🚀
+      <button onClick={submit} disabled={posting} style={{ ...btnStyle, width: '100%', padding: '14px 0', fontSize: 16, marginTop: 8, boxShadow: `0 4px 20px rgba(0,212,255,0.3)`, opacity: posting ? 0.6 : 1 }}>
+        {posting ? 'Posting…' : 'Post Bet to Group 🚀'}
       </button>
     </div>
   )
