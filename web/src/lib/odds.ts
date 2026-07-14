@@ -113,18 +113,28 @@ function parseEvent(event: ESPNEvent, sport: string): ESPNGame {
 }
 
 // ESPN accepts ?dates=YYYYMMDD or a YYYYMMDD-YYYYMMDD range.
+// IMPORTANT: format using the LOCAL calendar date, not toISOString() (which
+// is always UTC). For anyone west of UTC (all of the US), the UTC date
+// rolls over to "tomorrow" while it's still "today" locally for a chunk of
+// the evening — that shifted the whole search window and could push
+// today's games out of range or group them under the wrong day.
+function fmtLocalDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}${m}${day}`
+}
+
 // Build a range covering the last `daysBack` days through today.
 export function recentDateRange(daysBack = 4): string {
-  const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '')
   const end = new Date()
   const start = new Date(Date.now() - daysBack * 864e5)
-  return `${fmt(start)}-${fmt(end)}`
+  return `${fmtLocalDate(start)}-${fmtLocalDate(end)}`
 }
 
 // A range spanning both directions from today.
 export function dateRange(daysBack: number, daysForward: number): string {
-  const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '')
-  return `${fmt(new Date(Date.now() - daysBack * 864e5))}-${fmt(new Date(Date.now() + daysForward * 864e5))}`
+  return `${fmtLocalDate(new Date(Date.now() - daysBack * 864e5))}-${fmtLocalDate(new Date(Date.now() + daysForward * 864e5))}`
 }
 
 // Curated pool of games for Weekly Pick'em: upcoming games to pick from,
