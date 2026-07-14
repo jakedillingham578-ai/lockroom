@@ -2103,40 +2103,63 @@ function AddBetPage() {
               </div>
             )}
 
-            {gameResults.length > 0 && (
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', marginTop: 8 }}>
-                {gameResults.map((g, i) => {
-                  const gameDate = new Date(g.date)
-                  const isToday = gameDate.toDateString() === new Date().toDateString()
-                  return (
-                    <button key={g.id} onClick={() => selectGame(g)} style={{
-                      width: '100%', display: 'flex', alignItems: 'center', gap: 12,
-                      padding: '12px 14px', background: 'none', border: 'none',
-                      borderBottom: i < gameResults.length - 1 ? `1px solid ${C.border}` : 'none',
-                      cursor: 'pointer', textAlign: 'left',
-                    }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 700, fontSize: 13 }}>{g.awayTeam} @ {g.homeTeam}</div>
-                        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                          {g.sport} · {isToday ? 'Today' : gameDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · {gameDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                        </div>
+            {gameResults.length > 0 && (() => {
+              // Group results by local calendar day so games are easy to
+              // scan by date instead of one long flat list.
+              const dayKey = (iso: string) => new Date(iso).toLocaleDateString('en-CA')
+              const dayLabel = (key: string) => {
+                const d = new Date(key + 'T12:00:00')
+                const todayKey = new Date().toLocaleDateString('en-CA')
+                const tmrwKey = new Date(Date.now() + 864e5).toLocaleDateString('en-CA')
+                if (key === todayKey) return 'Today'
+                if (key === tmrwKey) return 'Tomorrow'
+                return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+              }
+              const byDay: Record<string, typeof gameResults> = {}
+              for (const g of gameResults) { const k = dayKey(g.date); (byDay[k] ??= []).push(g) }
+              const days = Object.keys(byDay).sort()
+
+              return (
+                <div style={{ marginTop: 8 }}>
+                  {days.map(day => (
+                    <div key={day} style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.primary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{dayLabel(day)}</div>
+                      <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
+                        {byDay[day].map((g, i) => {
+                          const gameDate = new Date(g.date)
+                          return (
+                            <button key={g.id} onClick={() => selectGame(g)} style={{
+                              width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+                              padding: '12px 14px', background: 'none', border: 'none',
+                              borderBottom: i < byDay[day].length - 1 ? `1px solid ${C.border}` : 'none',
+                              cursor: 'pointer', textAlign: 'left',
+                            }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontWeight: 700, fontSize: 13 }}>{g.awayTeam} @ {g.homeTeam}</div>
+                                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                                  {g.sport} · {gameDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                                </div>
+                              </div>
+                              {g.inProgress && (
+                                <div style={{ fontSize: 11, color: C.win, fontWeight: 700, flexShrink: 0 }}>
+                                  🔴 {g.awayScore}–{g.homeScore}
+                                </div>
+                              )}
+                              {g.completed && (
+                                <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, flexShrink: 0 }}>
+                                  Final {g.awayScore}–{g.homeScore}
+                                </div>
+                              )}
+                              <div style={{ color: C.primary, fontSize: 13 }}>+</div>
+                            </button>
+                          )
+                        })}
                       </div>
-                      {g.inProgress && (
-                        <div style={{ fontSize: 11, color: C.win, fontWeight: 700, flexShrink: 0 }}>
-                          🔴 {g.awayScore}–{g.homeScore}
-                        </div>
-                      )}
-                      {g.completed && (
-                        <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, flexShrink: 0 }}>
-                          Final {g.awayScore}–{g.homeScore}
-                        </div>
-                      )}
-                      <div style={{ color: C.primary, fontSize: 13 }}>+</div>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
 
             <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
               Linking a game enables auto-settlement when the final score is in ✓
