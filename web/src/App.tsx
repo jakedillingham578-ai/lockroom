@@ -1214,13 +1214,13 @@ function HomePage() {
       <div style={{ background: 'rgba(75,156,211,0.15)', backdropFilter: 'blur(12px)', borderRadius: 20, padding: '20px 20px 16px', marginBottom: 16, color: C.text, border: `1px solid rgba(75,156,211,0.3)`, boxShadow: '0 4px 20px rgba(75,156,211,0.15)' }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 2, color: C.text }}>{me.displayName}</h1>
         <div style={{ fontSize: 13, color: C.muted }}>{groupName} · Personal record</div>
-        <div style={{ display: 'flex', gap: 16, marginTop: 14 }}>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
           {[
             { label: 'Record', val: `${me.stats.wins}W`, val2: `-${me.stats.losses}L`, color1: '#4ade80', color2: '#f87171' },
             { label: 'Profit', val: `${me.stats.totalProfit >= 0 ? '+' : ''}$${me.stats.totalProfit.toFixed(2)}`, color1: me.stats.totalProfit >= 0 ? '#4ade80' : '#f87171' },
             { label: 'ROI', val: `${me.stats.roi >= 0 ? '+' : ''}${me.stats.roi.toFixed(1)}%`, color1: me.stats.roi >= 0 ? '#4ade80' : '#f87171' },
           ].map(s => (
-            <div key={s.label} style={{ background: 'rgba(75,156,211,0.08)', borderRadius: 10, padding: '6px 12px', border: `1px solid ${C.border}` }}>
+            <div key={s.label} style={{ flex: 1, textAlign: 'center', background: 'rgba(75,156,211,0.08)', borderRadius: 10, padding: '6px 12px', border: `1px solid ${C.border}` }}>
               <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{s.label}</div>
               <div style={{ fontSize: 15, fontWeight: 900 }}>
                 <span style={{ color: s.color1 }}>{s.val}</span>
