@@ -258,14 +258,30 @@ function GroupSetupPage({ onGroup, onCancel }: { onGroup: (id: string, name: str
         if (!uid) throw new Error('Your session expired. Please sign in again.')
         const { data: group, error: err } = await (sb as any).from('groups').select('*').eq('code', joinCode.trim().toUpperCase()).single()
         if (err || !group) throw new Error('Group not found. Check the code.')
-        const doInsert = () => (sb as any).from('group_members').upsert({ group_id: group.id, user_id: uid }, { onConflict: 'group_id,user_id', ignoreDuplicates: true })
-        let { error: memErr } = await doInsert()
-        if (memErr) {
-          // Token may not have been attached yet — refresh and retry once.
-          await sb.auth.refreshSession().catch(() => {})
-          ;({ error: memErr } = await doInsert())
-          if (memErr) throw new Error('Could not join. Try signing out and back in, then rejoin.')
+
+        // Already a member? (Common on rejoin.) The SELECT policy only shows
+        // groups you're already in, so this naturally returns nothing if not.
+        const { data: already } = await (sb as any).from('group_members').select('group_id').eq('group_id', group.id).eq('user_id', uid).maybeSingle()
+
+        if (!already) {
+          // IMPORTANT: use a plain INSERT, not upsert/ON CONFLICT. Postgres
+          // requires SELECT-policy visibility of the conflict target row to
+          // evaluate ON CONFLICT — but our SELECT policy only shows groups
+          // you're already a member of, so ON CONFLICT always fails with an
+          // RLS error for a genuinely new join. A plain insert has no such
+          // requirement and works correctly.
+          const doInsert = () => (sb as any).from('group_members').insert({ group_id: group.id, user_id: uid })
+          let { error: memErr } = await doInsert()
+          if (memErr) {
+            // Token may not have been attached yet — refresh and retry once.
+            await sb.auth.refreshSession().catch(() => {})
+            ;({ error: memErr } = await doInsert())
+            // A duplicate-key error here just means we joined moments ago
+            // (race) — that's success, not a failure.
+            if (memErr && memErr.code !== '23505') throw new Error('Could not join. Try signing out and back in, then rejoin.')
+          }
         }
+
         // Confirm the membership actually landed before proceeding.
         const { data: check } = await (sb as any).from('group_members').select('group_id').eq('group_id', group.id).eq('user_id', uid).maybeSingle()
         if (!check) throw new Error('Could not join — please try again.')
