@@ -234,6 +234,8 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
     .on('postgres_changes', { event: '*', schema: 'public', table: 'survivor_picks', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'survivor_featured', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members', filter: `group_id=eq.${groupId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bracket_competitions', filter: `group_id=eq.${groupId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bracket_matches' }, onChange)
     .subscribe()
   return () => { supabase.removeChannel(channel) }
 }
@@ -407,6 +409,95 @@ export async function getOrCreateProfile(authUser: {
 
   if (error) { console.error('[store] getOrCreateProfile:', error.message); return null }
   return rowToUser(created)
+}
+
+// ── Bracket ──────────────────────────────────────────────────
+import type { BracketState, BracketMatch, BracketAction } from './bracket'
+
+function rowToBracketMatch(row: any): BracketMatch {
+  return {
+    id: row.id, round: row.round, slot: row.slot,
+    userAId: row.user_a_id, userBId: row.user_b_id,
+    periodStart: row.period_start, periodEnd: row.period_end,
+    winnerId: row.winner_id,
+  }
+}
+
+export async function fetchActiveBracket(groupId: string): Promise<BracketState | null> {
+  if (!SUPABASE_READY) return null
+  const { data: bracket } = await supabase
+    .from('bracket_competitions')
+    .select('*')
+    .eq('group_id', groupId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!bracket) return null
+  const { data: matches } = await supabase
+    .from('bracket_matches')
+    .select('*')
+    .eq('bracket_id', (bracket as any).id)
+  return {
+    id: (bracket as any).id, groupId: (bracket as any).group_id, status: (bracket as any).status,
+    round: (bracket as any).round, roundDays: (bracket as any).round_days, championId: (bracket as any).champion_id,
+    matches: (matches ?? []).map(rowToBracketMatch),
+  }
+}
+
+export async function fetchLastChampion(groupId: string): Promise<{ championId: string; completedAt: string } | null> {
+  if (!SUPABASE_READY) return null
+  const { data } = await supabase
+    .from('bracket_competitions')
+    .select('champion_id, completed_at')
+    .eq('group_id', groupId)
+    .eq('status', 'completed')
+    .order('completed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!data || !(data as any).champion_id) return null
+  return { championId: (data as any).champion_id, completedAt: (data as any).completed_at }
+}
+
+export async function startBracket(groupId: string, seededUserIds: string[], roundDays = 3): Promise<string | null> {
+  if (!SUPABASE_READY) return null
+  const { buildRound1 } = await import('./bracket')
+  const { data: bracket, error } = await supabase
+    .from('bracket_competitions')
+    .insert({ group_id: groupId, status: 'active', round: 1, round_days: roundDays })
+    .select().single()
+  if (error || !bracket) { console.error('[store] startBracket:', error?.message); return null }
+
+  const now = new Date()
+  const periodEnd = new Date(now.getTime() + roundDays * 864e5)
+  const pairs = buildRound1(seededUserIds)
+  const rows = pairs.map(p => ({
+    bracket_id: (bracket as any).id, round: 1, slot: p.slot,
+    user_a_id: p.userAId, user_b_id: p.userBId,
+    period_start: now.toISOString(), period_end: periodEnd.toISOString(),
+  }))
+  const { error: matchErr } = await supabase.from('bracket_matches').insert(rows)
+  if (matchErr) { console.error('[store] startBracket matches:', matchErr.message); return null }
+  return (bracket as any).id
+}
+
+export async function applyBracketActions(bracketId: string, actions: BracketAction[]): Promise<void> {
+  if (!SUPABASE_READY) return
+  for (const a of actions) {
+    if (a.kind === 'setWinner') {
+      await supabase.from('bracket_matches').update({ winner_id: a.winnerId }).eq('id', a.matchId)
+    } else if (a.kind === 'createRound') {
+      const rows = a.pairs.map(p => ({
+        bracket_id: bracketId, round: a.round, slot: p.slot,
+        user_a_id: p.userAId, user_b_id: p.userBId,
+        period_start: a.periodStart.toISOString(), period_end: a.periodEnd.toISOString(),
+      }))
+      await supabase.from('bracket_matches').insert(rows)
+      await supabase.from('bracket_competitions').update({ round: a.round }).eq('id', bracketId)
+    } else if (a.kind === 'complete') {
+      await supabase.from('bracket_competitions').update({ status: 'completed', champion_id: a.championId, completed_at: new Date().toISOString() }).eq('id', bracketId)
+    }
+  }
 }
 
 export { SUPABASE_READY }

@@ -2762,116 +2762,170 @@ function BestRecordComp({ users, bets, onBack }: { users: User[], bets: any[], o
   )
 }
 
-function BracketComp({ users, onBack }: { users: User[], onBack: () => void }) {
-  const { groupName } = useApp()
-  // 5 players: u4 vs u5 in R1, u1 gets bye, semis: u1 vs winner(u4/u5), u2 vs u3
-  const lc = C.borderL // line color
-  const slotH = 36 // slot height
-  const slotGap = 4 // gap between slots in a match
-  const matchH = slotH * 2 + slotGap // total height of one matchup
+function BracketComp({ users, bets, onBack }: { users: User[], bets: Bet[], onBack: () => void }) {
+  const { me, groupName, groupId } = useApp()
+  const [state, setState] = useState<import('./lib/bracket').BracketState | null>(null)
+  const [lastChampion, setLastChampion] = useState<{ championId: string; completedAt: string } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [starting, setStarting] = useState(false)
+  const [roundDays, setRoundDays] = useState(3)
 
-  const r1Winner = users[3] // u4 beats u5
-  const sf1Winner = users[0] // u1 beats u4 (bye advantage)
-  const sf2Winner = users[1] // u2 beats u3
-  const champion = null as User | null
+  const load = useCallback(async () => {
+    if (!groupId) return
+    try {
+      const store = await import('./lib/store')
+      let bracket = await store.fetchActiveBracket(groupId)
 
-  const Slot = ({ user, isWinner, hasWinner }: { user: User | null, isWinner: boolean, hasWinner: boolean }) => (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 7, padding: '0 10px',
-      height: slotH, background: isWinner ? C.winBg : user ? C.bgCard : C.bgEl,
-      border: `1px solid ${isWinner ? C.win : C.border}`, borderRadius: 8,
-      opacity: hasWinner && !isWinner ? 0.4 : 1, width: 130,
-    }}>
-      {user
-        ? <><Avatar name={user.displayName} size={20} /><span style={{ fontWeight: 700, fontSize: 12, flex: 1 }}>{user.displayName}</span>{isWinner && <span style={{ color: C.win, fontSize: 10 }}>✓</span>}</>
-        : <span style={{ color: C.muted, fontSize: 11, fontStyle: 'italic' }}>TBD</span>
+      // Catch up any rounds that should have advanced since we last looked.
+      if (bracket) {
+        const { computeBracketActions } = await import('./lib/bracket')
+        const actions = computeBracketActions(bracket, bets)
+        if (actions.length) {
+          await store.applyBracketActions(bracket.id, actions)
+          bracket = await store.fetchActiveBracket(groupId)
+        }
       }
+      setState(bracket)
+      if (!bracket) setLastChampion(await store.fetchLastChampion(groupId))
+    } catch (e) {
+      console.warn('[bracket] load failed', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [groupId, bets])
+
+  useEffect(() => { load() }, [load])
+
+  const startBracket = async () => {
+    if (!groupId || users.length < 2) return
+    setStarting(true)
+    try {
+      // Seed by real profit over the trailing 7 days — best first.
+      const { profitInWindow } = await import('./lib/bracket')
+      const now = new Date(); const weekAgo = new Date(now.getTime() - 7 * 864e5)
+      const ranked = [...users].sort((a, b) =>
+        profitInWindow(bets as any, b.id, weekAgo, now) - profitInWindow(bets as any, a.id, weekAgo, now)
+      )
+      const store = await import('./lib/store')
+      await store.startBracket(groupId, ranked.map(u => u.id), roundDays)
+      await load()
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const getUser = (id: string | null) => users.find(u => u.id === id) ?? null
+
+  const Slot = ({ userId, isWinner, hasWinner, isBye }: { userId: string | null, isWinner: boolean, hasWinner: boolean, isBye: boolean }) => {
+    const u = getUser(userId)
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 7, padding: '0 10px', height: 36,
+        background: isWinner ? C.winBg : u ? C.bgCard : C.bgEl,
+        border: `1px solid ${isWinner ? C.win : C.border}`, borderRadius: 8,
+        opacity: hasWinner && !isWinner ? 0.4 : 1, width: 140, flexShrink: 0,
+      }}>
+        {u
+          ? <><Avatar name={u.displayName} size={20} /><span style={{ fontWeight: 700, fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName}{u.id === me.id ? ' (you)' : ''}</span>{isWinner && <span style={{ color: C.win, fontSize: 10 }}>✓</span>}</>
+          : <span style={{ color: C.muted, fontSize: 11, fontStyle: 'italic' }}>{isBye ? 'BYE' : 'TBD'}</span>
+        }
+      </div>
+    )
+  }
+
+  if (loading) return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
+      <div style={{ textAlign: 'center', color: C.muted, padding: '40px 0' }}>Loading bracket…</div>
     </div>
   )
 
-  const Match = ({ top, bottom, winner }: { top: User | null, bottom: User | null, winner: User | null }) => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: slotGap }}>
-      <Slot user={top} isWinner={!!winner && winner.id === top?.id} hasWinner={!!winner} />
-      <Slot user={bottom} isWinner={!!winner && winner.id === bottom?.id} hasWinner={!!winner} />
-    </div>
-  )
+  if (!state) {
+    return (
+      <div>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
+        <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Bracket</h2>
+        <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>{groupName} · Seeded by real weekly profit · Auto-graded</p>
+
+        {lastChampion && getUser(lastChampion.championId) && (
+          <div style={{ background: C.goldBg, border: `1.5px solid ${C.gold}`, borderRadius: 14, padding: '14px 16px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ fontSize: 26 }}>🏆</div>
+            <div>
+              <div style={{ fontSize: 11, color: C.gold, fontWeight: 700, textTransform: 'uppercase' }}>Last Champion</div>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{getUser(lastChampion.championId)!.displayName}</div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 18 }}>
+          <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>Start this week's bracket</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
+            Everyone in {groupName} gets seeded by their real profit over the last 7 days. Each round, matchups are decided by whoever has the better real betting profit during that window — lose your matchup, you're out.
+          </div>
+          {me.isPro && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: 'uppercase', marginBottom: 6 }}>Round length (Pro)</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[1, 2, 3, 5].map(d => (
+                  <button key={d} onClick={() => setRoundDays(d)} style={{ flex: 1, padding: '8px 0', borderRadius: 9, border: `1.5px solid ${roundDays === d ? C.primary : C.border}`, background: roundDays === d ? C.primaryBg : C.bgEl, color: roundDays === d ? C.primary : C.muted, fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>{d}d</button>
+                ))}
+              </div>
+            </div>
+          )}
+          <button onClick={startBracket} disabled={starting || users.length < 2} style={{ ...btnStyle, width: '100%', opacity: starting || users.length < 2 ? 0.6 : 1 }}>
+            {starting ? 'Starting…' : users.length < 2 ? 'Need at least 2 group members' : `Start Bracket (${roundDays}-day rounds)`}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const rounds = Array.from(new Set(state.matches.map(m => m.round))).sort((a, b) => a - b)
+  const champion = state.status === 'completed' ? getUser(state.championId) : null
 
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
-      <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Custom Bracket</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 24 }}>{groupName} · 5-player single elimination</p>
+      <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Bracket</h2>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 4 }}>{groupName} · {state.status === 'completed' ? 'Completed' : `Round ${state.round}`}</p>
+      {state.status === 'active' && (() => {
+        const cur = state.matches.filter(m => m.round === state.round && m.userAId && m.userBId && !m.winnerId)
+        const nextEnd = cur[0] ? new Date(cur[0].periodEnd) : null
+        if (!nextEnd) return null
+        const daysLeft = Math.max(0, Math.ceil((nextEnd.getTime() - Date.now()) / 864e5))
+        return <p style={{ color: C.primary, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>{daysLeft === 0 ? 'Round ends today' : `${daysLeft}d left in this round`}</p>
+      })()}
+
+      {champion && (
+        <div style={{ background: C.goldBg, border: `2px solid ${C.gold}`, borderRadius: 16, padding: '20px', textAlign: 'center', marginBottom: 20 }}>
+          <div style={{ fontSize: 40 }}>🏆</div>
+          <div style={{ fontWeight: 900, fontSize: 20, color: C.gold, marginTop: 6 }}>{champion.displayName}</div>
+          <div style={{ color: C.muted, fontSize: 13, marginTop: 2 }}>Bracket Champion</div>
+        </div>
+      )}
 
       <div style={{ overflowX: 'auto', paddingBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, minWidth: 580 }}>
-
-          {/* ── ROUND 1 ── */}
-          <div>
-            <div style={{ color: C.muted, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Round 1</div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {/* u4 vs u5 */}
-              <Match top={users[3]} bottom={users[4]} winner={r1Winner} />
-              {/* spacer to push sf2 down */}
-              <div style={{ height: 20 + matchH }} />
-            </div>
-          </div>
-
-          {/* R1 → Semis connector */}
-          <svg width="40" height={matchH * 2 + 20} style={{ flexShrink: 0, marginTop: 24 }}>
-            {/* line from r1 match center out */}
-            <line x1="0" y1={matchH / 2} x2="20" y2={matchH / 2} stroke={lc} strokeWidth="2" />
-            {/* vertical to sf1 center */}
-            <line x1="20" y1={matchH / 2} x2="20" y2={slotH / 2} stroke={lc} strokeWidth="2" />
-            <line x1="20" y1={slotH / 2} x2="40" y2={slotH / 2} stroke={lc} strokeWidth="2" />
-          </svg>
-
-          {/* ── SEMIS ── */}
-          <div>
-            <div style={{ color: C.muted, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Semifinals</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-              {/* SF1: u1 (bye) vs r1Winner */}
-              <Match top={users[0]} bottom={r1Winner} winner={sf1Winner} />
-              {/* SF2: u2 vs u3 */}
-              <Match top={users[1]} bottom={users[2]} winner={sf2Winner} />
-            </div>
-          </div>
-
-          {/* Semis → Final connector */}
-          <svg width="40" height={matchH * 2 + 20} style={{ flexShrink: 0, marginTop: 24 }}>
-            <line x1="0" y1={matchH / 2} x2="20" y2={matchH / 2} stroke={lc} strokeWidth="2" />
-            <line x1="0" y1={matchH + 20 + matchH / 2} x2="20" y2={matchH + 20 + matchH / 2} stroke={lc} strokeWidth="2" />
-            <line x1="20" y1={matchH / 2} x2="20" y2={matchH + 20 + matchH / 2} stroke={lc} strokeWidth="2" />
-            <line x1="20" y1={(matchH / 2 + matchH + 20 + matchH / 2) / 2} x2="40" y2={(matchH / 2 + matchH + 20 + matchH / 2) / 2} stroke={lc} strokeWidth="2" />
-          </svg>
-
-          {/* ── FINAL ── */}
-          <div style={{ marginTop: 24 + matchH / 2 + 10 - matchH / 2 }}>
-            <div style={{ color: C.muted, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Final</div>
-            <Match top={sf1Winner} bottom={sf2Winner} winner={champion} />
-          </div>
-
-          {/* Final → Champion */}
-          <svg width="36" height={matchH} style={{ flexShrink: 0, marginTop: 24 + matchH / 2 + 10 - matchH / 2 + 24 }}>
-            <line x1="0" y1={matchH / 2} x2="36" y2={matchH / 2} stroke={lc} strokeWidth="2" />
-          </svg>
-
-          {/* ── CHAMPION ── */}
-          <div style={{ marginTop: 24 + matchH / 2 + 10 - matchH / 2 }}>
-            <div style={{ color: C.gold, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Champion</div>
-            <div style={{ background: C.goldBg, border: `2px solid ${C.gold}`, borderRadius: 12, padding: '14px', textAlign: 'center', width: 110 }}>
-              {champion
-                ? <><Avatar name={champion.displayName} size={32} /><div style={{ fontWeight: 800, fontSize: 13, marginTop: 6, color: C.gold }}>{champion.displayName}</div></>
-                : <><div style={{ fontSize: 30 }}>🏆</div><div style={{ color: C.gold, fontSize: 12, fontWeight: 700, marginTop: 4 }}>TBD</div></>
-              }
-            </div>
-          </div>
-
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 28, minWidth: rounds.length * 170 }}>
+          {rounds.map(round => {
+            const matches = state.matches.filter(m => m.round === round).sort((a, b) => a.slot - b.slot)
+            const isFinal = round === rounds[rounds.length - 1] && matches.length === 1
+            return (
+              <div key={round}>
+                <div style={{ color: C.muted, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+                  {isFinal ? 'Final' : `Round ${round}`}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  {matches.map(m => (
+                    <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <Slot userId={m.userAId} isWinner={m.winnerId === m.userAId} hasWinner={!!m.winnerId} isBye={!m.userBId && !!m.userAId} />
+                      <Slot userId={m.userBId} isWinner={m.winnerId === m.userBId} hasWinner={!!m.winnerId} isBye={!m.userAId && !!m.userBId} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </div>
-      </div>
-
-      {/* Bye note */}
-      <div style={{ background: C.primaryBg, border: `1px solid ${C.borderL}`, borderRadius: 10, padding: '8px 14px', marginTop: 16, fontSize: 12, color: C.muted }}>
-        <span style={{ color: C.primary, fontWeight: 700 }}>You</span> received a first-round bye as the top seed.
       </div>
     </div>
   )
@@ -3256,256 +3310,6 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
   )
 }
 
-function SeasonLongComp({ users, bets, onBack }: { users: User[], bets: any[], onBack: () => void }) {
-  const { groupName } = useApp()
-  const [selected, setSelected] = useState<string | null>(null)
-
-  const yearBets = bets.filter((b: any) => b.status !== 'pending' && (Date.now() - b.createdAt.getTime()) < 365 * 864e5)
-
-  const calcStats = (uid: string) => {
-    const ub = yearBets.filter((b: any) => b.userId === uid).sort((a: any, b: any) => a.createdAt - b.createdAt)
-    const wins = ub.filter((b: any) => b.status === 'won')
-    const losses = ub.filter((b: any) => b.status === 'lost')
-    const winPayout = (b: any) => b.odds > 0 ? b.stake * b.odds / 100 : b.stake * 100 / Math.abs(b.odds)
-    const profit = ub.reduce((s: number, b: any) => b.status === 'won' ? s + winPayout(b) : b.status === 'lost' ? s - b.stake : s, 0)
-    const staked = ub.reduce((s: number, b: any) => s + b.stake, 0)
-    const roi = staked > 0 ? (profit / staked) * 100 : 0
-    const winRate = ub.length > 0 ? wins.length / ub.length : 0
-    const avgOdds = ub.length > 0 ? ub.reduce((s: number, b: any) => s + b.odds, 0) / ub.length : 0
-    const avgStake = ub.length > 0 ? staked / ub.length : 0
-
-    // Sport breakdown
-    const sports: Record<string, { w: number, l: number }> = {}
-    ub.forEach((b: any) => {
-      if (!sports[b.sport]) sports[b.sport] = { w: 0, l: 0 }
-      if (b.status === 'won') sports[b.sport].w++ ; else sports[b.sport].l++
-    })
-
-    // Best / worst single bet by profit
-    const best = wins.length > 0 ? wins.reduce((top: any, b: any) => winPayout(b) > winPayout(top) ? b : top, wins[0]) : null
-    const worst = losses.length > 0 ? losses.reduce((bot: any, b: any) => b.stake > bot.stake ? b : bot, losses[0]) : null
-
-    // Running P&L for sparkline (up to 8 points)
-    let running = 0
-    const curve = ub.map((b: any) => {
-      running += b.status === 'won' ? winPayout(b) : b.status === 'lost' ? -b.stake : 0
-      return running
-    })
-
-    // Streak
-    let streak = 0, streakType = 'win'
-    for (let i = ub.length - 1; i >= 0; i--) {
-      const s = ub[i].status
-      if (i === ub.length - 1) { streakType = s === 'won' ? 'win' : 'loss'; streak = 1 }
-      else if ((streakType === 'win' && s === 'won') || (streakType === 'loss' && s === 'lost')) streak++
-      else break
-    }
-
-    return { wins: wins.length, losses: losses.length, profit, staked, roi, winRate, avgOdds, avgStake, sports, best, worst, curve, streak, streakType, total: ub.length }
-  }
-
-  const standings = users.map(u => ({ ...u, ...calcStats(u.id) })).sort((a, b) => b.profit - a.profit)
-  const leader = standings[0]
-  const selectedUser = selected ? standings.find(s => s.id === selected) : null
-
-  const Sparkline = ({ curve, color }: { curve: number[], color: string }) => {
-    if (curve.length < 2) return <div style={{ fontSize: 11, color: C.muted }}>Not enough data</div>
-    const pts = curve.slice(-10)
-    const w = 120, h = 36
-    const min = Math.min(...pts, 0), max = Math.max(...pts, 0)
-    const range = max - min || 1
-    const x = (i: number) => (i / (pts.length - 1)) * w
-    const y = (v: number) => h - ((v - min) / range) * h
-    const d = pts.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ')
-    return (
-      <svg width={w} height={h} style={{ overflow: 'visible' }}>
-        <path d={d} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-        <circle cx={x(pts.length - 1)} cy={y(pts[pts.length - 1])} r="3.5" fill={color} />
-        <line x1="0" y1={y(0)} x2={w} y2={y(0)} stroke={C.border} strokeWidth="1" strokeDasharray="3,3" />
-      </svg>
-    )
-  }
-
-  // Detail view for a selected player
-  if (selectedUser) {
-    const u = selectedUser
-    return (
-      <div>
-        <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back to Standings</button>
-
-        {/* Player header */}
-        <div style={{ background: 'linear-gradient(135deg, #1a3a52, #2a5a7a)', borderRadius: 18, padding: '20px', marginBottom: 20, color: '#fff' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
-            <Avatar name={u.displayName} size={48} />
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 900 }}>{u.displayName}</div>
-              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>2024–25 Season · {u.total} bets placed</div>
-            </div>
-            <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>Current streak</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: u.streakType === 'win' ? '#4ade80' : '#f87171' }}>
-                {u.streakType === 'win' ? '🔥' : '🥶'} {u.streak} {u.streakType}
-              </div>
-            </div>
-          </div>
-          {/* P&L curve */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-            <div>
-              <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>Season P&L trend</div>
-              <Sparkline curve={u.curve} color={u.profit >= 0 ? '#4ade80' : '#f87171'} />
-            </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 32, fontWeight: 900, color: u.profit >= 0 ? '#4ade80' : '#f87171' }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
-              <div style={{ fontSize: 11, opacity: 0.6 }}>net profit</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Stat grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 20 }}>
-          {[
-            { label: 'Win Rate', value: `${(u.winRate * 100).toFixed(1)}%`, color: u.winRate >= 0.5 ? C.win : C.loss },
-            { label: 'ROI', value: `${u.roi >= 0 ? '+' : ''}${u.roi.toFixed(1)}%`, color: u.roi >= 0 ? C.win : C.loss },
-            { label: 'Record', value: `${u.wins}–${u.losses}`, color: C.text },
-            { label: 'Avg Stake', value: `$${u.avgStake.toFixed(0)}`, color: C.text },
-            { label: 'Avg Odds', value: u.avgOdds >= 0 ? `+${u.avgOdds.toFixed(0)}` : u.avgOdds.toFixed(0), color: C.text },
-            { label: 'Total Risked', value: `$${u.staked.toFixed(0)}`, color: C.text },
-          ].map(s => (
-            <div key={s.label} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 12px', textAlign: 'center' }}>
-              <div style={{ fontSize: 20, fontWeight: 900, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Sport breakdown */}
-        {Object.keys(u.sports).length > 0 && (
-          <>
-            <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>By Sport</div>
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', marginBottom: 20 }}>
-              {Object.entries(u.sports).map(([sport, rec]: [string, any], i, arr) => {
-                const total = rec.w + rec.l
-                const wr = total > 0 ? rec.w / total : 0
-                return (
-                  <div key={sport} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', borderBottom: i < arr.length - 1 ? `1px solid ${C.border}` : 'none' }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, width: 50 }}>{sport}</div>
-                    <div style={{ flex: 1, background: C.bgEl, borderRadius: 99, height: 6, overflow: 'hidden' }}>
-                      <div style={{ width: `${wr * 100}%`, height: '100%', background: wr >= 0.5 ? C.win : C.loss, borderRadius: 99 }} />
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 700, width: 60, textAlign: 'right' }}>
-                      <span style={{ color: C.win }}>{rec.w}W</span><span style={{ color: C.muted }}>–</span><span style={{ color: C.loss }}>{rec.l}L</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: wr >= 0.5 ? C.win : C.loss, fontWeight: 700, width: 34, textAlign: 'right' }}>{(wr * 100).toFixed(0)}%</div>
-                  </div>
-                )
-              })}
-            </div>
-          </>
-        )}
-
-        {/* Best & worst */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <div>
-            <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>💰 Best Bet</div>
-            <div style={{ background: C.winBg, border: `1px solid ${C.win}`, borderRadius: 14, padding: '14px' }}>
-              {u.best
-                ? <><div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{u.best.description}</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>{u.best.sport} · +{u.best.odds}</div>
-                    <div style={{ fontSize: 18, fontWeight: 900, color: C.win, marginTop: 8 }}>+${(u.best.odds > 0 ? u.best.stake * u.best.odds / 100 : u.best.stake * 100 / Math.abs(u.best.odds)).toFixed(0)}</div></>
-                : <div style={{ color: C.muted, fontSize: 13 }}>No wins yet</div>
-              }
-            </div>
-          </div>
-          <div>
-            <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>🩸 Worst Beat</div>
-            <div style={{ background: C.lossBg, border: `1px solid ${C.loss}`, borderRadius: 14, padding: '14px' }}>
-              {u.worst
-                ? <><div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{u.worst.description}</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>{u.worst.sport} · {u.worst.odds}</div>
-                    <div style={{ fontSize: 18, fontWeight: 900, color: C.loss, marginTop: 8 }}>-${u.worst.stake.toFixed(0)}</div></>
-                : <div style={{ color: C.muted, fontSize: 13 }}>No losses yet</div>
-              }
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div>
-      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
-
-      {/* Pro badge */}
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #B45309, #D97706)', borderRadius: 99, padding: '4px 12px', marginBottom: 14 }}>
-        <span style={{ fontSize: 12, color: '#fff', fontWeight: 800 }}>⚡ PRO ANALYTICS</span>
-      </div>
-
-      {/* Hero header */}
-      <div style={{ background: `linear-gradient(135deg, #1a3a52 0%, #2a5a7a 100%)`, borderRadius: 18, padding: '22px 20px', marginBottom: 20, color: '#fff' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, opacity: 0.7, marginBottom: 6 }}>{groupName} · 2024–25 Season</div>
-        <h2 style={{ fontSize: 26, fontWeight: 900, marginBottom: 16 }}>Season Long</h2>
-        <div style={{ display: 'flex', gap: 10 }}>
-          {[
-            { label: 'Total Bets', value: standings.reduce((s, u) => s + u.total, 0) },
-            { label: 'Players', value: users.length },
-            { label: 'Leader P&L', value: `${leader?.profit >= 0 ? '+' : ''}$${leader?.profit.toFixed(2) ?? '0'}`, color: leader?.profit >= 0 ? '#4ade80' : '#f87171' },
-          ].map(s => (
-            <div key={s.label} style={{ flex: 1, background: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: '12px' }}>
-              <div style={{ fontSize: 20, fontWeight: 900, color: (s as any).color ?? '#fff' }}>{s.value}</div>
-              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Leader spotlight */}
-      {leader && (
-        <div style={{ background: C.goldBg, border: `1.5px solid ${C.gold}`, borderRadius: 16, padding: '14px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ fontSize: 30 }}>🏆</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: C.gold, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>Leading the group</div>
-            <div style={{ fontSize: 18, fontWeight: 900, marginTop: 1 }}>{leader.displayName}</div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{leader.wins}W–{leader.losses}L · ROI {leader.roi >= 0 ? '+' : ''}{leader.roi.toFixed(1)}% · Win rate {(leader.winRate * 100).toFixed(0)}%</div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: leader.profit >= 0 ? C.win : C.loss }}>{leader.profit >= 0 ? '+' : ''}${leader.profit.toFixed(2)}</div>
-            <div style={{ fontSize: 10, color: C.muted }}>net profit</div>
-          </div>
-        </div>
-      )}
-
-      {/* Full standings — tap to drill in */}
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Full Standings · Tap for breakdown</div>
-      {standings.map((u, i) => (
-        <button key={u.id} onClick={() => setSelected(u.id)} style={{
-          display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
-          background: i === 0 ? C.goldBg : C.bgCard,
-          border: `1px solid ${i === 0 ? C.gold : C.border}`,
-          borderRadius: 14, padding: '14px 16px', marginBottom: 8, cursor: 'pointer',
-        }}>
-          <div style={{ fontSize: i < 3 ? 22 : 14, width: 28, textAlign: 'center', fontWeight: 800, color: C.muted, flexShrink: 0 }}>
-            {i < 3 ? ['🥇','🥈','🥉'][i] : `#${i+1}`}
-          </div>
-          <Avatar name={u.displayName} size={36} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>{u.displayName}</div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: 3, display: 'flex', gap: 10 }}>
-              <span><span style={{ color: C.win, fontWeight: 700 }}>{u.wins}W</span> – <span style={{ color: C.loss, fontWeight: 700 }}>{u.losses}L</span></span>
-              <span>ROI <span style={{ color: u.roi >= 0 ? C.win : C.loss, fontWeight: 700 }}>{u.roi >= 0 ? '+' : ''}{u.roi.toFixed(0)}%</span></span>
-              <span>Win% <span style={{ fontWeight: 700 }}>{(u.winRate * 100).toFixed(0)}%</span></span>
-            </div>
-          </div>
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 900, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
-            <div style={{ fontSize: 10, color: C.muted }}>›</div>
-          </div>
-        </button>
-      ))}
-    </div>
-  )
-}
-
 // ─── Competitions ─────────────────────────────────────────────────────────────
 function CompetitionsPage() {
   const { me, users, bets, upgradePro, groupName } = useApp()
@@ -3513,15 +3317,12 @@ function CompetitionsPage() {
   const [activeComp, setActiveComp] = useState<string | null>(null)
 
   if (activeComp === 'best-record') return <BestRecordComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'bracket') return <BracketComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'bracket') return <BracketComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
   if (activeComp === 'pickem') return <PickemComp users={users} onBack={() => setActiveComp(null)} />
   if (activeComp === 'survivor') return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'season') return <SeasonLongComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
 
-  const ACTIVE = { name: 'Weekly Best Record', type: 'Best Record', status: 'active', daysLeft: 4, prize: 'Bragging rights + winner picks next group dinner', players: users }
-
-  const freeUsed = true // they've used their 1 free competition this week
-  const daysUntilReset = 3
+  // Real countdown to the weekly reset (every Monday) instead of a hardcoded number.
+  const daysUntilMonday = (8 - new Date().getDay()) % 7 || 7
 
   return (
     <div>
@@ -3530,70 +3331,38 @@ function CompetitionsPage() {
           <h1 style={{ fontSize: 26, fontWeight: 900 }}>Competitions</h1>
           <p style={{ color: C.muted, fontSize: 13 }}>{groupName}</p>
         </div>
-        <button onClick={() => freeUsed && !me.isPro ? setShowModal(true) : alert('Create competition (coming soon)')} style={{ ...btnStyle, padding: '8px 16px', fontSize: 13 }}>+ New</button>
-      </div>
-
-      {/* Free tier banner */}
-      {!me.isPro && (
-        <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '12px 16px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>Free Plan</div>
-            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>1 competition per week · resets in {daysUntilReset}d</div>
-          </div>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.win }} />
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.bgEl, border: `1px solid ${C.border}` }} />
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.bgEl, border: `1px solid ${C.border}` }} />
-          </div>
-        </div>
-      )}
-
-      {/* Active comp */}
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Active</div>
-      <div onClick={() => setActiveComp('best-record')} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 20, borderLeft: `4px solid ${C.win}`, cursor: 'pointer' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-          <span style={{ background: C.bgEl, color: C.muted, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 600 }}>{ACTIVE.type}</span>
-          <span style={{ background: C.winBg, color: C.win, padding: '3px 10px', borderRadius: 99, fontSize: 9, fontWeight: 800 }}>ACTIVE</span>
-        </div>
-        <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 8 }}>{ACTIVE.name}</div>
-        <div style={{ background: C.goldBg, border: `1px solid rgba(180,83,9,0.2)`, borderRadius: 6, padding: '4px 10px', marginBottom: 10, display: 'inline-block' }}>
-          <span style={{ color: C.gold, fontSize: 12, fontWeight: 600 }}>Prize: {ACTIVE.prize}</span>
-        </div>
-        <div style={{ display: 'flex', gap: 16, color: C.muted, fontSize: 12, marginBottom: 12 }}>
-          <span>{ACTIVE.players.length} players</span>
-          <span>{ACTIVE.daysLeft}d left</span>
-        </div>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {ACTIVE.players.map(u => <Avatar key={u.id} name={u.displayName} size={28} />)}
-        </div>
-      </div>
-
-      {/* Pro competitions */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-          {me.isPro ? 'Pro Competitions' : 'Pro Only'}
-        </div>
         {!me.isPro && (
-          <button onClick={() => setShowModal(true)} style={{ background: C.goldBg, border: `1px solid ${C.gold}`, color: C.gold, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 11 }}>Upgrade</button>
+          <button onClick={() => setShowModal(true)} style={{ background: C.goldBg, border: `1px solid ${C.gold}`, color: C.gold, padding: '7px 14px', borderRadius: 10, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>⭐ Go Pro</button>
         )}
       </div>
+
+      {/* This week's real leaderboard snapshot */}
+      <div onClick={() => setActiveComp('best-record')} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 20, borderLeft: `4px solid ${C.win}`, cursor: 'pointer' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ background: C.bgEl, color: C.muted, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 600 }}>This Week</span>
+          <span style={{ color: C.muted, fontSize: 11, fontWeight: 700 }}>resets in {daysUntilMonday}d</span>
+        </div>
+        <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 10 }}>Weekly Best Record</div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {users.map(u => <Avatar key={u.id} name={u.displayName} size={28} />)}
+        </div>
+      </div>
+
+      {/* Games — free for everyone */}
+      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Games</div>
       {[
-        { icon: '🏆', title: 'Custom Bracket', desc: 'Head-to-head tournament — one loss and you\'re out.', id: 'bracket' },
-        { icon: '🗳️', title: 'Weekly Pick\'em', desc: 'Everyone picks the same slate. Most correct wins.', id: 'pickem' },
-        { icon: '🏝️', title: 'Survivor Pool', desc: 'Pick one team per week. One wrong pick ends your run.', id: 'survivor' },
-        { icon: '📅', title: 'Season Long', desc: 'Full season standings. Who\'s the real sharp?', id: 'season' },
+        { icon: '🏆', title: 'Bracket', desc: "Real weekly elimination — seeded by real profit, no clicking required.", id: 'bracket' },
+        { icon: '🗳️', title: "Weekly Pick'em", desc: 'Everyone picks the same slate. Most correct wins.', id: 'pickem' },
+        { icon: '🏝️', title: 'Survivor Pool', desc: "Same featured game every day. Miss it, you're out.", id: 'survivor' },
       ].map(c => (
-        <div key={c.title} onClick={() => me.isPro ? setActiveComp(c.id) : setShowModal(true)}
-          style={{ background: C.bgCard, border: `1px solid ${me.isPro ? C.primary : C.border}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer', opacity: me.isPro ? 1 : 0.6 }}>
+        <div key={c.title} onClick={() => setActiveComp(c.id)}
+          style={{ background: C.bgCard, border: `1px solid ${C.primary}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer' }}>
           <div style={{ fontSize: 28, flexShrink: 0 }}>{c.icon}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>{c.title}</div>
             <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{c.desc}</div>
           </div>
-          {me.isPro
-            ? <div style={{ color: C.primary, fontSize: 12, fontWeight: 700 }}>Start →</div>
-            : <div style={{ color: C.gold, fontSize: 13, fontWeight: 800 }}>🔒</div>
-          }
+          <div style={{ color: C.primary, fontSize: 12, fontWeight: 700 }}>Open →</div>
         </div>
       ))}
 
@@ -3606,7 +3375,7 @@ function CompetitionsPage() {
               <div style={{ fontSize: 24, fontWeight: 900 }}>Lockroom Pro</div>
               <div style={{ color: C.muted, marginTop: 4 }}>Take your group to the next level</div>
             </div>
-            {[['⚔️', 'Custom competitions: brackets, survivor, pick\'em'], ['📈', 'Advanced stats: ROI charts, trend analysis'], ['🔥', 'Unlimited groups & history'], ['🏆', 'Season leaderboards & hall of fame']].map(([e, t]) => (
+            {[['⚔️', 'Custom bracket round length (1-5 days)'], ['📈', 'Advanced stats: ROI charts, trend analysis'], ['🔥', 'Unlimited groups & history'], ['🏆', 'Season leaderboards & hall of fame']].map(([e, t]) => (
               <div key={t} style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
                 <span style={{ fontSize: 18 }}>{e}</span><span style={{ fontSize: 14 }}>{t}</span>
               </div>
