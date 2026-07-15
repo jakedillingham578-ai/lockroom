@@ -3118,6 +3118,438 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
   )
 }
 
+function ConfidencePoolComp({ users, onBack }: { users: User[], onBack: () => void }) {
+  const { groupName, me, groupId } = useApp()
+  type PGame = import('./lib/odds').ESPNGame
+  const [games, setGames] = useState<PGame[]>([])
+  const [savedPicks, setSavedPicks] = useState<Record<string, { pick: string; confidence: number }>>({})
+  const [myPicks, setMyPicks] = useState<Record<string, { pick: string; confidence: number }>>({})
+  const [allPicks, setAllPicks] = useState<import('./lib/store').ConfidencePick[]>([])
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [tab, setTab] = useState<'picks' | 'scoreboard'>('picks')
+
+  const load = useCallback(async () => {
+    try {
+      const [odds, store] = await Promise.all([import('./lib/odds'), import('./lib/store')])
+      const g = await odds.fetchPickemGames()
+      const picks = groupId ? await store.fetchConfidencePicks(groupId) : []
+      setGames(g)
+      setAllPicks(picks)
+      const mine: Record<string, { pick: string; confidence: number }> = {}
+      picks.filter(p => p.userId === me.id).forEach(p => { mine[p.gameId] = { pick: p.pick, confidence: p.confidence } })
+      setSavedPicks(mine)
+      setMyPicks(mine)
+    } catch (e) {
+      console.warn('[confidence] load failed', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [groupId, me.id])
+
+  useEffect(() => { load() }, [load])
+
+  const winnerOf = (g: PGame): string | null => {
+    if (!g.completed || g.homeScore == null || g.awayScore == null) return null
+    if (g.homeScore === g.awayScore) return 'DRAW'
+    return g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam
+  }
+
+  const openGames = games.filter(g => !g.completed && !g.inProgress)
+  const maxConf = openGames.length
+
+  // Pick a team: assign the highest unused confidence value by default.
+  const selectPick = (g: PGame, team: string) => {
+    if (g.completed || g.inProgress) return
+    setMyPicks(prev => {
+      if (prev[g.id]) return { ...prev, [g.id]: { ...prev[g.id], pick: team } }
+      const used = new Set(Object.values(prev).map(p => p.confidence))
+      let next = maxConf
+      while (used.has(next) && next > 1) next--
+      return { ...prev, [g.id]: { pick: team, confidence: next } }
+    })
+  }
+
+  // Changing confidence: swap with whichever game currently holds that value.
+  const setConfidence = (gameId: string, value: number) => {
+    setMyPicks(prev => {
+      const mine = prev[gameId]
+      if (!mine) return prev
+      const swapWith = Object.entries(prev).find(([gid, p]) => gid !== gameId && p.confidence === value)
+      const next = { ...prev, [gameId]: { ...mine, confidence: value } }
+      if (swapWith) next[swapWith[0]] = { ...swapWith[1], confidence: mine.confidence }
+      return next
+    })
+  }
+
+  const madeCount = openGames.filter(g => myPicks[g.id]).length
+  const dirty = openGames.some(g => {
+    const m = myPicks[g.id], s = savedPicks[g.id]
+    return (m?.pick !== s?.pick) || (m?.confidence !== s?.confidence)
+  })
+
+  const submitPicks = async () => {
+    if (!groupId) return
+    setSubmitting(true)
+    try {
+      const { upsertConfidencePick } = await import('./lib/store')
+      const toSave = openGames.filter(g => {
+        const m = myPicks[g.id], s = savedPicks[g.id]
+        return m && (m.pick !== s?.pick || m.confidence !== s?.confidence)
+      })
+      await Promise.all(toSave.map(g => upsertConfidencePick(groupId, me.id, g.id, myPicks[g.id].pick, myPicks[g.id].confidence)))
+      setAllPicks(prev => {
+        const withoutMine = prev.filter(p => p.userId !== me.id || !toSave.some(g => g.id === p.gameId))
+        return [...withoutMine, ...toSave.map(g => ({ gameId: g.id, userId: me.id, pick: myPicks[g.id].pick, confidence: myPicks[g.id].confidence }))]
+      })
+      setSavedPicks(prev => ({ ...prev, ...Object.fromEntries(toSave.map(g => [g.id, myPicks[g.id]])) }))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // Standings: sum of confidence values for correct picks.
+  const standings = users.map(u => {
+    let score = 0, correct = 0, graded = 0, picksMade = 0
+    for (const g of games) {
+      const p = allPicks.find(x => x.userId === u.id && x.gameId === g.id)
+      if (p) picksMade++
+      if (!g.completed || !p) continue
+      graded++
+      const w = winnerOf(g)
+      if (w && w !== 'DRAW' && w === p.pick) { correct++; score += p.confidence }
+    }
+    return { user: u, score, correct, graded, picksMade }
+  }).sort((a, b) => b.score - a.score)
+
+  const fmtTime = (iso: string) => {
+    const d = new Date(iso)
+    return d.toLocaleDateString('en-US', { weekday: 'short' }) + ' · ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  }
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
+
+      <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: '16px 18px', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <h2 style={{ fontSize: 20, fontWeight: 900, marginBottom: 2 }}>Confidence Pool <span style={{ color: C.gold, fontSize: 11 }}>⭐ PRO</span></h2>
+            <p style={{ color: C.muted, fontSize: 12 }}>{groupName} · Rank your confidence 1-{maxConf || 0} · Correct picks score their rank</p>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 22, fontWeight: 900, color: C.primary }}>{madeCount}/{openGames.length}</div>
+            <div style={{ fontSize: 10, color: C.muted, fontWeight: 600, textTransform: 'uppercase' }}>Picks made</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', background: C.bgEl, borderRadius: 10, padding: 3, marginBottom: 16 }}>
+        {(['picks', 'scoreboard'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{
+            flex: 1, padding: '9px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13,
+            background: tab === t ? C.primary : 'transparent', color: tab === t ? '#fff' : C.muted,
+          }}>{t === 'picks' ? 'Make Picks' : 'Scoreboard'}</button>
+        ))}
+      </div>
+
+      {loading && <div style={{ textAlign: 'center', color: C.muted, padding: '30px 0' }}>Loading games…</div>}
+      {!loading && games.length === 0 && (
+        <div style={{ textAlign: 'center', color: C.muted, padding: '30px 16px', background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14 }}>
+          No games scheduled in the next few days. Check back closer to game day.
+        </div>
+      )}
+
+      {tab === 'picks' && games.map(g => {
+        const mine = myPicks[g.id]
+        const w = winnerOf(g)
+        const locked = g.completed || g.inProgress
+        return (
+          <div key={g.id} style={{ background: C.bgCard, border: `1.5px solid ${mine ? C.primary : C.border}`, borderRadius: 14, marginBottom: 8, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', gap: 8 }}>
+              {[g.awayTeam, g.homeTeam].map((team, ti) => {
+                const isPicked = mine?.pick === team
+                const isWinner = g.completed && w === team
+                const otherPicked = mine && mine.pick !== team
+                return (
+                  <React.Fragment key={team}>
+                    <button onClick={() => selectPick(g, team)} disabled={locked} style={{
+                      flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      padding: '8px 10px', borderRadius: 10,
+                      border: `1.5px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
+                      background: isWinner ? C.winBg : isPicked ? C.primaryBg : C.bgEl,
+                      cursor: locked ? 'default' : 'pointer', opacity: otherPicked && !g.completed ? 0.4 : 1, transition: 'all 0.15s',
+                    }}>
+                      <span style={{ fontSize: 13, fontWeight: 900, color: isWinner ? C.win : isPicked ? C.primary : C.text }}>{team}</span>
+                      {g.completed && team === g.homeTeam && <span style={{ fontSize: 11, color: C.muted }}>{g.homeScore}</span>}
+                      {g.completed && team === g.awayTeam && <span style={{ fontSize: 11, color: C.muted }}>{g.awayScore}</span>}
+                    </button>
+                    {ti === 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, flexShrink: 0, width: 54 }}>
+                        <span style={{ fontSize: 12 }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
+                        {g.completed
+                          ? <span style={{ fontSize: 9, fontWeight: 900, color: C.muted }}>FINAL</span>
+                          : g.inProgress
+                            ? <span style={{ fontSize: 9, fontWeight: 900, color: C.loss }}>🔴 LIVE</span>
+                            : <span style={{ fontSize: 9, fontWeight: 900, color: C.muted }}>VS</span>}
+                        <span style={{ fontSize: 8, color: C.muted, fontWeight: 600, textAlign: 'center' }}>{g.completed || g.inProgress ? '' : fmtTime(g.date)}</span>
+                      </div>
+                    )}
+                  </React.Fragment>
+                )
+              })}
+              {!locked && mine && (
+                <select value={mine.confidence} onChange={e => setConfidence(g.id, parseInt(e.target.value))} style={{
+                  flexShrink: 0, width: 52, borderRadius: 10, border: `1.5px solid ${C.primary}`, background: C.primaryBg, color: C.primary, fontWeight: 900, fontSize: 13, textAlign: 'center', padding: '8px 2px',
+                }}>
+                  {Array.from({ length: maxConf }, (_, i) => maxConf - i).map(v => <option key={v} value={v}>{v}pt</option>)}
+                </select>
+              )}
+              {locked && mine && <div style={{ flexShrink: 0, width: 44, textAlign: 'center', fontWeight: 900, fontSize: 13, color: C.muted }}>{mine.confidence}pt</div>}
+            </div>
+            {g.completed && mine && (
+              <div style={{ padding: '6px 12px', fontSize: 11, fontWeight: 700, background: w === 'DRAW' ? C.pushBg : w === mine.pick ? C.winBg : C.lossBg, color: w === 'DRAW' ? C.push : w === mine.pick ? C.win : C.loss }}>
+                {w === 'DRAW' ? '➖ Draw — no result' : w === mine.pick ? `✓ +${mine.confidence} points` : '✗ You missed this one'}
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      {tab === 'picks' && openGames.length > 0 && (
+        <button onClick={submitPicks} disabled={!dirty || submitting} style={{
+          width: '100%', padding: '14px 0', borderRadius: 12, border: 'none', cursor: dirty ? 'pointer' : 'default',
+          background: dirty ? C.primary : C.bgEl, color: dirty ? '#fff' : C.muted, fontWeight: 800, fontSize: 15, marginTop: 8,
+          opacity: submitting ? 0.6 : 1,
+        }}>
+          {submitting ? 'Submitting…' : dirty ? `Submit Picks (${madeCount}/${openGames.length})` : `Picks submitted (${madeCount}/${openGames.length})`}
+        </button>
+      )}
+
+      {tab === 'scoreboard' && (
+        <div>
+          {standings.map((row, i) => {
+            const rankEmoji = ['🥇', '🥈', '🥉']
+            const isTop3 = i < 3
+            return (
+              <div key={row.user.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: i === 0 && row.graded > 0 ? C.goldBg : C.bgCard, border: `1px solid ${i === 0 && row.graded > 0 ? C.gold : C.border}`, borderRadius: 12, padding: '11px 14px', marginBottom: 8 }}>
+                <div style={{ fontSize: isTop3 ? 18 : 13, width: 24, textAlign: 'center', fontWeight: 700, color: C.muted }}>{isTop3 ? rankEmoji[i] : `#${i + 1}`}</div>
+                <Avatar name={row.user.displayName} size={30} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{row.user.displayName}{row.user.id === me.id ? ' (you)' : ''}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{row.correct}/{row.graded} correct · {row.picksMade} picks made</div>
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: C.primary }}>{row.score}<span style={{ fontSize: 11, color: C.muted }}> pts</span></div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const SQUARE_COLORS = ['#4B9CD3', '#f87171', '#4ade80', '#facc15', '#a78bfa', '#fb923c', '#22d3ee', '#f472b6']
+
+function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
+  const { groupName, me, groupId } = useApp()
+  type PGame = import('./lib/odds').ESPNGame
+  const [board, setBoard] = useState<import('./lib/store').SquaresBoard | null>(null)
+  const [game, setGame] = useState<PGame | null>(null) // the linked game's live data, once known
+  const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<PGame[]>([])
+  const [searching, setSearching] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [locking, setLocking] = useState(false)
+
+  const userColor = (uid: string | null) => uid ? SQUARE_COLORS[users.findIndex(u => u.id === uid) % SQUARE_COLORS.length] ?? C.muted : null
+  const userOf = (uid: string | null) => users.find(u => u.id === uid) ?? null
+
+  const load = useCallback(async () => {
+    if (!groupId) return
+    try {
+      const store = await import('./lib/store')
+      const b = await store.fetchActiveSquaresBoard(groupId)
+      setBoard(b)
+      if (b) {
+        const odds = await import('./lib/odds')
+        const status = await odds.fetchGameStatus(b.sport, b.league, b.gameId)
+        if (status) {
+          setGame(prev => ({ ...(prev ?? {} as PGame), completed: status.completed, homeScore: status.homeScore, awayScore: status.awayScore } as PGame))
+          // Auto-grade once the game is final and digits are assigned.
+          if (b.status === 'locked' && status.completed && status.homeScore != null && status.awayScore != null && b.homeDigits && b.awayDigits) {
+            const col = b.homeDigits.indexOf(status.homeScore % 10)
+            const row = b.awayDigits.indexOf(status.awayScore % 10)
+            const winCell = b.cells.find(c => c.row === row && c.col === col)
+            await store.completeSquaresBoard(b.id, winCell?.userId ?? null)
+            setBoard(await store.fetchActiveSquaresBoard(groupId) ?? { ...b, status: 'completed', winnerId: winCell?.userId ?? null })
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[squares] load failed', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [groupId])
+
+  useEffect(() => { load() }, [load])
+
+  const search = async () => {
+    setSearching(true)
+    try {
+      const { searchGames } = await import('./lib/odds')
+      setResults((await searchGames(query)).slice(0, 8))
+    } catch { setResults([]) }
+    setSearching(false)
+  }
+
+  const startBoard = async (g: PGame) => {
+    if (!groupId) return
+    setStarting(true)
+    try {
+      const store = await import('./lib/store')
+      await store.createSquaresBoard(groupId, g.id, g.sport, g.league)
+      await load()
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const toggleCell = async (cell: import('./lib/store').SquaresCell) => {
+    if (!board || board.status !== 'open') return
+    const store = await import('./lib/store')
+    if (cell.userId === me.id) await store.unclaimSquareCell(cell.id)
+    else if (!cell.userId) await store.claimSquareCell(cell.id, me.id)
+    else return
+    await load()
+  }
+
+  const lockBoard = async () => {
+    if (!board) return
+    setLocking(true)
+    try {
+      const shuffle = () => { const a = [0,1,2,3,4,5,6,7,8,9]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1));[a[i], a[j]] = [a[j], a[i]] } return a }
+      const store = await import('./lib/store')
+      await store.lockSquaresBoard(board.id, shuffle(), shuffle())
+      await load()
+    } finally {
+      setLocking(false)
+    }
+  }
+
+  const claimedCount = board?.cells.filter(c => c.userId).length ?? 0
+
+  if (loading) return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
+      <div style={{ textAlign: 'center', color: C.muted, padding: '40px 0' }}>Loading…</div>
+    </div>
+  )
+
+  if (!board) {
+    return (
+      <div>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
+        <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Squares <span style={{ color: C.gold, fontSize: 11 }}>⭐ PRO</span></h2>
+        <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>{groupName} · Classic 10×10 grid pool on a real game</p>
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="Search a team..." style={{ ...inputStyle, flex: 1, marginBottom: 0 }} />
+          <button onClick={search} style={{ ...btnStyle, padding: '0 16px', fontSize: 13, flexShrink: 0 }}>{searching ? '...' : 'Search'}</button>
+        </div>
+        {results.length > 0 && (
+          <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', marginTop: 8 }}>
+            {results.map((g, i) => (
+              <button key={g.id} onClick={() => startBoard(g)} disabled={starting} style={{ width: '100%', textAlign: 'left', padding: '12px 14px', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{g.awayTeam} @ {g.homeTeam}</div>
+                <div style={{ fontSize: 11, color: C.muted }}>{g.sport}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
+      <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Squares <span style={{ color: C.gold, fontSize: 11 }}>⭐ PRO</span></h2>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 4 }}>{groupName}</p>
+      <p style={{ color: C.primary, fontSize: 13, fontWeight: 700, marginBottom: 16 }}>
+        {board.status === 'open' && `${claimedCount}/100 squares claimed`}
+        {board.status === 'locked' && `Locked · waiting on final score${game?.completed ? '' : '…'}`}
+        {board.status === 'completed' && '🏆 Final — winner below'}
+      </p>
+
+      {board.status === 'completed' && (
+        <div style={{ background: C.goldBg, border: `2px solid ${C.gold}`, borderRadius: 16, padding: 18, textAlign: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 34 }}>🏆</div>
+          <div style={{ fontWeight: 900, fontSize: 18, color: C.gold, marginTop: 4 }}>
+            {board.winnerId ? userOf(board.winnerId)?.displayName : 'No one owned the winning square'}
+          </div>
+          {game?.homeScore != null && <div style={{ color: C.muted, fontSize: 13, marginTop: 2 }}>Final: {game.awayScore}–{game.homeScore}</div>}
+        </div>
+      )}
+
+      {/* Grid */}
+      <div style={{ overflowX: 'auto', paddingBottom: 8 }}>
+        <div style={{ display: 'inline-block' }}>
+          {board.status !== 'open' && (
+            <div style={{ display: 'flex', marginLeft: 26 }}>
+              {(board.homeDigits ?? Array.from({ length: 10 }, (_, i) => i)).map((d, i) => (
+                <div key={i} style={{ width: 26, textAlign: 'center', fontSize: 10, fontWeight: 800, color: C.primary }}>{board.homeDigits ? d : '?'}</div>
+              ))}
+            </div>
+          )}
+          {Array.from({ length: 10 }, (_, row) => (
+            <div key={row} style={{ display: 'flex', alignItems: 'center' }}>
+              <div style={{ width: 26, textAlign: 'center', fontSize: 10, fontWeight: 800, color: C.primary, flexShrink: 0 }}>
+                {board.status !== 'open' ? (board.awayDigits ? board.awayDigits[row] : '?') : ''}
+              </div>
+              {Array.from({ length: 10 }, (_, col) => {
+                const cell = board.cells.find(c => c.row === row && c.col === col)
+                const isMine = cell?.userId === me.id
+                const isWinning = board.status === 'completed' && board.homeDigits && board.awayDigits && game?.homeScore != null && game?.awayScore != null
+                  && board.homeDigits[col] === game.homeScore % 10 && board.awayDigits[row] === game.awayScore % 10
+                const color = userColor(cell?.userId ?? null)
+                return (
+                  <button key={col} onClick={() => cell && toggleCell(cell)} disabled={board.status !== 'open' || (!!cell?.userId && !isMine)} style={{
+                    width: 26, height: 26, border: `1px solid ${isWinning ? C.gold : C.border}`, flexShrink: 0,
+                    background: isWinning ? C.goldBg : color ? color + '33' : C.bgEl,
+                    cursor: board.status === 'open' && (!cell?.userId || isMine) ? 'pointer' : 'default',
+                    padding: 0,
+                  }}>
+                    {color && <div style={{ width: 8, height: 8, borderRadius: 4, background: color, margin: '0 auto' }} />}
+                  </button>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {board.status === 'open' && (
+        <button onClick={lockBoard} disabled={locking || claimedCount === 0} style={{ ...btnStyle, width: '100%', marginTop: 16, opacity: locking || claimedCount === 0 ? 0.6 : 1 }}>
+          {locking ? 'Locking…' : claimedCount === 0 ? 'Claim squares first' : `Lock Board & Assign Numbers (${claimedCount} claimed)`}
+        </button>
+      )}
+
+      {/* Legend */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+        {users.map(u => (
+          <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 8, padding: '4px 8px' }}>
+            <div style={{ width: 8, height: 8, borderRadius: 4, background: userColor(u.id) ?? C.muted }} />
+            <span style={{ fontSize: 11, fontWeight: 600 }}>{u.displayName}{u.id === me.id ? ' (you)' : ''}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) {
   const { groupName, me, groupId } = useApp()
   type SGame = import('./lib/odds').ESPNGame
@@ -3323,6 +3755,8 @@ function CompetitionsPage() {
   if (activeComp === 'bracket') return <BracketComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
   if (activeComp === 'pickem') return <PickemComp users={users} onBack={() => setActiveComp(null)} />
   if (activeComp === 'survivor') return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'confidence' && me.isPro) return <ConfidencePoolComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'squares' && me.isPro) return <SquaresComp users={users} onBack={() => setActiveComp(null)} />
 
   return (
     <div>
@@ -3371,6 +3805,33 @@ function CompetitionsPage() {
         </div>
       ))}
 
+      {/* Pro games */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, marginTop: 20 }}>
+        <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          {me.isPro ? 'Pro Games' : 'Pro Games 🔒'}
+        </div>
+        {!me.isPro && (
+          <button onClick={() => setShowModal(true)} style={{ background: C.goldBg, border: `1px solid ${C.gold}`, color: C.gold, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 11 }}>Upgrade</button>
+        )}
+      </div>
+      {[
+        { icon: '🎯', title: 'Confidence Pool', desc: 'Rank your picks 1-N — your most confident call is worth the most.', id: 'confidence' },
+        { icon: '🔢', title: 'Squares', desc: 'Classic 10×10 grid pool on one real game. Own a cell, win the game.', id: 'squares' },
+      ].map(c => (
+        <div key={c.title} onClick={() => me.isPro ? setActiveComp(c.id) : setShowModal(true)}
+          style={{ background: C.bgCard, border: `1px solid ${me.isPro ? C.gold : C.border}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer', opacity: me.isPro ? 1 : 0.6 }}>
+          <div style={{ fontSize: 26, flexShrink: 0 }}>{c.icon}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>{c.title}</div>
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{c.desc}</div>
+          </div>
+          {me.isPro
+            ? <div style={{ color: C.gold, fontSize: 12, fontWeight: 700 }}>Open →</div>
+            : <div style={{ color: C.gold, fontSize: 13, fontWeight: 800 }}>🔒</div>
+          }
+        </div>
+      ))}
+
       {/* Pro modal */}
       {showModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'flex-end', zIndex: 100 }} onClick={() => setShowModal(false)}>
@@ -3380,7 +3841,7 @@ function CompetitionsPage() {
               <div style={{ fontSize: 24, fontWeight: 900 }}>Lockroom Pro</div>
               <div style={{ color: C.muted, marginTop: 4 }}>Take your group to the next level</div>
             </div>
-            {[['⚔️', 'Custom bracket round length (1-5 days)'], ['📈', 'Advanced stats: ROI charts, trend analysis'], ['🔥', 'Unlimited groups & history'], ['🏆', 'Season leaderboards & hall of fame']].map(([e, t]) => (
+            {[['🎯', 'Confidence Pool — rank your picks 1-N'], ['🔢', 'Squares — classic 10×10 grid pool'], ['⚔️', 'Custom bracket round length (1-5 days)'], ['📈', 'Advanced stats: ROI charts, trend analysis']].map(([e, t]) => (
               <div key={t} style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
                 <span style={{ fontSize: 18 }}>{e}</span><span style={{ fontSize: 14 }}>{t}</span>
               </div>

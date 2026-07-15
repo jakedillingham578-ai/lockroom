@@ -346,6 +346,32 @@ export async function fetchBoxscoreStat(
   }
 }
 
+// Check one specific game's live status by id — used by Squares to know
+// when to grade, without waiting for it to reappear in a scoreboard fetch.
+export async function fetchGameStatus(
+  sportLabel: string, league: string, eventId: string
+): Promise<{ completed: boolean; homeScore: number | null; awayScore: number | null } | null> {
+  const path = ESPN_PATHS[sportLabel]
+  if (!path) return null
+  try {
+    const res = await fetch(`${ESPN}/${path.sport}/${league}/summary?event=${eventId}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    const comp = data.header?.competitions?.[0]
+    if (!comp) return null
+    const completed = !!comp.status?.type?.completed
+    const home = comp.competitors?.find((c: any) => c.homeAway === 'home')
+    const away = comp.competitors?.find((c: any) => c.homeAway === 'away')
+    return {
+      completed,
+      homeScore: home?.score != null ? parseInt(home.score) : null,
+      awayScore: away?.score != null ? parseInt(away.score) : null,
+    }
+  } catch {
+    return null
+  }
+}
+
 // Format game time nicely
 export function formatGameTime(isoDate: string): string {
   const d = new Date(isoDate)

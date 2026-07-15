@@ -236,6 +236,9 @@ export function subscribeToGroup(groupId: string, onChange: () => void): () => v
     .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bracket_competitions', filter: `group_id=eq.${groupId}` }, onChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bracket_matches' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'confidence_picks', filter: `group_id=eq.${groupId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'squares_boards', filter: `group_id=eq.${groupId}` }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'squares_cells' }, onChange)
     .subscribe()
   return () => { supabase.removeChannel(channel) }
 }
@@ -498,6 +501,82 @@ export async function applyBracketActions(bracketId: string, actions: BracketAct
       await supabase.from('bracket_competitions').update({ status: 'completed', champion_id: a.championId, completed_at: new Date().toISOString() }).eq('id', bracketId)
     }
   }
+}
+
+// ── Confidence Pool (Pro) ────────────────────────────────────
+export interface ConfidencePick { gameId: string; userId: string; pick: string; confidence: number }
+
+export async function fetchConfidencePicks(groupId: string): Promise<ConfidencePick[]> {
+  if (!SUPABASE_READY) return []
+  const { data, error } = await supabase.from('confidence_picks').select('*').eq('group_id', groupId)
+  if (error) { console.error('[store] fetchConfidencePicks:', error.message); return [] }
+  return (data ?? []).map((r: any) => ({ gameId: r.game_id, userId: r.user_id, pick: r.pick, confidence: r.confidence }))
+}
+
+export async function upsertConfidencePick(groupId: string, userId: string, gameId: string, pick: string, confidence: number): Promise<void> {
+  if (!SUPABASE_READY) return
+  const { error } = await supabase.from('confidence_picks')
+    .upsert({ group_id: groupId, user_id: userId, game_id: gameId, pick, confidence }, { onConflict: 'group_id,user_id,game_id' })
+  if (error) console.error('[store] upsertConfidencePick:', error.message)
+}
+
+// ── Squares (Pro) ─────────────────────────────────────────────
+export interface SquaresCell { id: string; row: number; col: number; userId: string | null }
+export interface SquaresBoard {
+  id: string; groupId: string; gameId: string; sport: string; league: string
+  status: 'open' | 'locked' | 'completed'
+  homeDigits: number[] | null; awayDigits: number[] | null
+  winnerId: string | null
+  cells: SquaresCell[]
+}
+
+function rowToSquaresBoard(row: any, cells: any[]): SquaresBoard {
+  return {
+    id: row.id, groupId: row.group_id, gameId: row.game_id, sport: row.sport, league: row.league,
+    status: row.status, homeDigits: row.home_digits, awayDigits: row.away_digits, winnerId: row.winner_id,
+    cells: cells.map(c => ({ id: c.id, row: c.row, col: c.col, userId: c.user_id })),
+  }
+}
+
+export async function fetchActiveSquaresBoard(groupId: string): Promise<SquaresBoard | null> {
+  if (!SUPABASE_READY) return null
+  const { data: board } = await supabase
+    .from('squares_boards').select('*').eq('group_id', groupId)
+    .in('status', ['open', 'locked']).order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (!board) return null
+  const { data: cells } = await supabase.from('squares_cells').select('*').eq('board_id', (board as any).id)
+  return rowToSquaresBoard(board, cells ?? [])
+}
+
+export async function createSquaresBoard(groupId: string, gameId: string, sport: string, league: string): Promise<string | null> {
+  if (!SUPABASE_READY) return null
+  const { data: board, error } = await supabase
+    .from('squares_boards').insert({ group_id: groupId, game_id: gameId, sport, league, status: 'open' }).select().single()
+  if (error || !board) { console.error('[store] createSquaresBoard:', error?.message); return null }
+  const cells = []
+  for (let r = 0; r < 10; r++) for (let c = 0; c < 10; c++) cells.push({ board_id: (board as any).id, row: r, col: c })
+  await supabase.from('squares_cells').insert(cells)
+  return (board as any).id
+}
+
+export async function claimSquareCell(cellId: string, userId: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  await supabase.from('squares_cells').update({ user_id: userId }).eq('id', cellId).is('user_id', null)
+}
+
+export async function unclaimSquareCell(cellId: string): Promise<void> {
+  if (!SUPABASE_READY) return
+  await supabase.from('squares_cells').update({ user_id: null }).eq('id', cellId)
+}
+
+export async function lockSquaresBoard(boardId: string, homeDigits: number[], awayDigits: number[]): Promise<void> {
+  if (!SUPABASE_READY) return
+  await supabase.from('squares_boards').update({ status: 'locked', home_digits: homeDigits, away_digits: awayDigits, locked_at: new Date().toISOString() }).eq('id', boardId)
+}
+
+export async function completeSquaresBoard(boardId: string, winnerId: string | null): Promise<void> {
+  if (!SUPABASE_READY) return
+  await supabase.from('squares_boards').update({ status: 'completed', winner_id: winnerId, completed_at: new Date().toISOString() }).eq('id', boardId)
 }
 
 export { SUPABASE_READY }
