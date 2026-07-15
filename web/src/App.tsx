@@ -2951,9 +2951,12 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
   const { groupName, me, groupId } = useApp()
   type PGame = import('./lib/odds').ESPNGame
   const [games, setGames] = useState<PGame[]>([])
-  const [myPicks, setMyPicks] = useState<Record<string, string>>({})   // gameId → team
+  const [savedPicks, setSavedPicks] = useState<Record<string, string>>({}) // what's actually persisted
+  const [myPicks, setMyPicks] = useState<Record<string, string>>({})       // local selections, may be unsaved
   const [allPicks, setAllPicks] = useState<{ gameId: string; userId: string; pick: string }[]>([])
   const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [tab, setTab] = useState<'picks' | 'scoreboard'>('picks')
 
   const load = useCallback(async () => {
     try {
@@ -2964,6 +2967,7 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
       setAllPicks(picks)
       const mine: Record<string, string> = {}
       picks.filter(p => p.userId === me.id).forEach(p => { mine[p.gameId] = p.pick })
+      setSavedPicks(mine)
       setMyPicks(mine)
     } catch (e) {
       console.warn('[pickem] load failed', e)
@@ -2980,31 +2984,45 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
     return g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam
   }
 
-  const makePick = async (g: PGame, team: string) => {
-    if (g.completed || g.inProgress) return  // locked once it starts
+  // Selecting a team just updates local state — nothing saves until Submit.
+  const selectPick = (g: PGame, team: string) => {
+    if (g.completed || g.inProgress) return // locked once it starts
     setMyPicks(p => ({ ...p, [g.id]: team }))
-    setAllPicks(prev => [...prev.filter(p => !(p.userId === me.id && p.gameId === g.id)), { gameId: g.id, userId: me.id, pick: team }])
-    if (groupId) {
+  }
+
+  const openGames = games.filter(g => !g.completed && !g.inProgress)
+  const madeCount = openGames.filter(g => myPicks[g.id]).length
+  const dirty = openGames.some(g => myPicks[g.id] !== savedPicks[g.id])
+
+  const submitPicks = async () => {
+    if (!groupId) return
+    setSubmitting(true)
+    try {
       const { upsertPickemPick } = await import('./lib/store')
-      await upsertPickemPick(groupId, me.id, g.id, team)
+      const toSave = openGames.filter(g => myPicks[g.id] && myPicks[g.id] !== savedPicks[g.id])
+      await Promise.all(toSave.map(g => upsertPickemPick(groupId, me.id, g.id, myPicks[g.id])))
+      setAllPicks(prev => {
+        const withoutMine = prev.filter(p => p.userId !== me.id || !toSave.some(g => g.id === p.gameId))
+        return [...withoutMine, ...toSave.map(g => ({ gameId: g.id, userId: me.id, pick: myPicks[g.id] }))]
+      })
+      setSavedPicks(prev => ({ ...prev, ...Object.fromEntries(toSave.map(g => [g.id, myPicks[g.id]])) }))
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  const openGames = games.filter(g => !g.completed)
-  const madeCount = openGames.filter(g => myPicks[g.id]).length
-
   // Standings: correct picks among completed games, per member
   const standings = users.map(u => {
-    let correct = 0, graded = 0
+    let correct = 0, graded = 0, picksMade = 0
     for (const g of games) {
-      if (!g.completed) continue
-      const w = winnerOf(g)
       const p = allPicks.find(x => x.userId === u.id && x.gameId === g.id)
-      if (!p) continue
+      if (p) picksMade++
+      if (!g.completed || !p) continue
       graded++
+      const w = winnerOf(g)
       if (w && w !== 'DRAW' && w === p.pick) correct++
     }
-    return { user: u, correct, graded }
+    return { user: u, correct, graded, picksMade }
   }).sort((a, b) => b.correct - a.correct || b.graded - a.graded)
 
   const fmtTime = (iso: string) => {
@@ -3017,7 +3035,7 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
 
       {/* Header */}
-      <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: '16px 18px', marginBottom: 20 }}>
+      <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: '16px 18px', marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <h2 style={{ fontSize: 20, fontWeight: 900, marginBottom: 2 }}>Weekly Pick'em</h2>
@@ -3030,6 +3048,16 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
         </div>
       </div>
 
+      {/* Tabs */}
+      <div style={{ display: 'flex', background: C.bgEl, borderRadius: 10, padding: 3, marginBottom: 16 }}>
+        {(['picks', 'scoreboard'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{
+            flex: 1, padding: '9px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13,
+            background: tab === t ? C.primary : 'transparent', color: tab === t ? '#fff' : C.muted,
+          }}>{t === 'picks' ? 'Make Picks' : 'Scoreboard'}</button>
+        ))}
+      </div>
+
       {loading && <div style={{ textAlign: 'center', color: C.muted, padding: '30px 0' }}>Loading games…</div>}
 
       {!loading && games.length === 0 && (
@@ -3039,7 +3067,7 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
       )}
 
       {/* Games */}
-      {games.map(g => {
+      {tab === 'picks' && games.map(g => {
         const picked = myPicks[g.id]
         const w = winnerOf(g)
         const locked = g.completed || g.inProgress
@@ -3052,7 +3080,7 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
                 const otherPicked = picked && picked !== team
                 return (
                   <React.Fragment key={team}>
-                    <button onClick={() => makePick(g, team)} disabled={locked} style={{
+                    <button onClick={() => selectPick(g, team)} disabled={locked} style={{
                       flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                       padding: '8px 10px', borderRadius: 10,
                       border: `1.5px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
@@ -3089,20 +3117,30 @@ function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
         )
       })}
 
-      {/* Standings */}
-      {standings.some(s => s.graded > 0) && (
-        <div style={{ marginTop: 28 }}>
-          <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Standings</div>
+      {/* Submit picks — nothing saves until you tap this */}
+      {tab === 'picks' && openGames.length > 0 && (
+        <button onClick={submitPicks} disabled={!dirty || submitting} style={{
+          width: '100%', padding: '14px 0', borderRadius: 12, border: 'none', cursor: dirty ? 'pointer' : 'default',
+          background: dirty ? C.primary : C.bgEl, color: dirty ? '#fff' : C.muted, fontWeight: 800, fontSize: 15, marginTop: 8,
+          opacity: submitting ? 0.6 : 1,
+        }}>
+          {submitting ? 'Submitting…' : dirty ? `Submit Picks (${madeCount}/${openGames.length})` : `Picks submitted (${madeCount}/${openGames.length})`}
+        </button>
+      )}
+
+      {/* Scoreboard */}
+      {tab === 'scoreboard' && (
+        <div>
           {standings.map((row, i) => {
             const rankEmoji = ['🥇', '🥈', '🥉']
             const isTop3 = i < 3
             return (
-              <div key={row.user.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: i === 0 ? C.goldBg : C.bgCard, border: `1px solid ${i === 0 ? C.gold : C.border}`, borderRadius: 12, padding: '11px 14px', marginBottom: 8 }}>
+              <div key={row.user.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: i === 0 && row.graded > 0 ? C.goldBg : C.bgCard, border: `1px solid ${i === 0 && row.graded > 0 ? C.gold : C.border}`, borderRadius: 12, padding: '11px 14px', marginBottom: 8 }}>
                 <div style={{ fontSize: isTop3 ? 18 : 13, width: 24, textAlign: 'center', fontWeight: 700, color: C.muted }}>{isTop3 ? rankEmoji[i] : `#${i + 1}`}</div>
                 <Avatar name={row.user.displayName} size={30} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{row.user.displayName}{row.user.id === me.id ? ' (you)' : ''}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>{row.correct}/{row.graded} correct</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{row.correct}/{row.graded} correct · {row.picksMade} picks made</div>
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 900, color: C.primary }}>{row.graded > 0 ? `${Math.round((row.correct / row.graded) * 100)}%` : '—'}</div>
               </div>
