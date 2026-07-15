@@ -562,6 +562,17 @@ export async function createSquaresBoard(groupId: string, gameId: string, sport:
   return (board as any).id
 }
 
+// Self-heal: if a board is somehow missing cells (e.g. a partial insert
+// failure), fill in whatever positions don't exist yet instead of leaving
+// a grid where taps silently do nothing.
+export async function ensureSquaresCells(boardId: string, existing: { row: number; col: number }[]): Promise<void> {
+  if (!SUPABASE_READY) return
+  const have = new Set(existing.map(c => `${c.row},${c.col}`))
+  const missing = []
+  for (let r = 0; r < 10; r++) for (let c = 0; c < 10; c++) if (!have.has(`${r},${c}`)) missing.push({ board_id: boardId, row: r, col: c })
+  if (missing.length) await supabase.from('squares_cells').insert(missing)
+}
+
 export async function claimSquareCell(cellId: string, userId: string): Promise<void> {
   if (!SUPABASE_READY) return
   await supabase.from('squares_cells').update({ user_id: userId }).eq('id', cellId).is('user_id', null)

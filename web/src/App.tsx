@@ -3374,7 +3374,14 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
     if (!groupId) return
     try {
       const store = await import('./lib/store')
-      const b = await store.fetchActiveSquaresBoard(groupId)
+      let b = await store.fetchActiveSquaresBoard(groupId)
+      // Self-heal: a board should always have exactly 100 cells. If it
+      // doesn't (e.g. a partial insert failure), fill in what's missing
+      // instead of showing a grid where taps silently do nothing.
+      if (b && b.status === 'open' && b.cells.length < 100) {
+        await store.ensureSquaresCells(b.id, b.cells)
+        b = await store.fetchActiveSquaresBoard(groupId)
+      }
       setBoard(b)
       if (b) {
         const odds = await import('./lib/odds')
@@ -3482,11 +3489,17 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Squares <span style={{ color: C.gold, fontSize: 11 }}>⭐ PRO</span></h2>
       <p style={{ color: C.muted, fontSize: 13, marginBottom: 4 }}>{groupName}</p>
-      <p style={{ color: C.primary, fontSize: 13, fontWeight: 700, marginBottom: 16 }}>
+      <p style={{ color: C.primary, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
         {board.status === 'open' && `${claimedCount}/100 squares claimed`}
         {board.status === 'locked' && `Locked · waiting on final score${game?.completed ? '' : '…'}`}
         {board.status === 'completed' && '🏆 Final — winner below'}
       </p>
+      {board.status === 'open' && (
+        <p style={{ color: C.muted, fontSize: 12, marginBottom: 16, lineHeight: 1.5 }}>
+          Tap any empty square to claim it (tap it again to release it). Once everyone's got their squares, hit "Lock Board" below — that randomly assigns the 0-9 numbers to each row and column. The final score's last digit picks the winning square.
+        </p>
+      )}
+      {board.status !== 'open' && <div style={{ marginBottom: 16 }} />}
 
       {board.status === 'completed' && (
         <div style={{ background: C.goldBg, border: `2px solid ${C.gold}`, borderRadius: 16, padding: 18, textAlign: 'center', marginBottom: 16 }}>
