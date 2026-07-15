@@ -12,19 +12,43 @@ type BetRow = {
   stake: number
   status: string
   description: string
+  pick_side: string | null
+  pick_line: number | null
 }
 
 function evaluateBet(bet: BetRow, game: ESPNGame): 'won' | 'lost' | 'push' | null {
   if (!game.completed) return null
   if (game.homeScore === null || game.awayScore === null) return null
-
-  const desc = bet.description.toLowerCase()
-  const home = game.homeTeam.toLowerCase()
-  const away = game.awayTeam.toLowerCase()
   const homeScore = game.homeScore
   const awayScore = game.awayScore
 
-  // Helper: did the description mention the home team?
+  // Preferred path: the EXACT pick captured at bet creation (home/away,
+  // over/under + line). No text parsing, no ambiguity.
+  if (bet.pick_side) {
+    if (bet.type === 'moneyline') {
+      const homeWon = homeScore > awayScore
+      if (homeScore === awayScore) return 'push' // draw, e.g. soccer
+      return (bet.pick_side === 'home' ? homeWon : !homeWon) ? 'won' : 'lost'
+    }
+    if (bet.type === 'spread' && bet.pick_line !== null) {
+      const margin = bet.pick_side === 'home' ? homeScore - awayScore : awayScore - homeScore
+      const result = margin + bet.pick_line
+      if (result === 0) return 'push'
+      return result > 0 ? 'won' : 'lost'
+    }
+    if (bet.type === 'over_under' && bet.pick_line !== null) {
+      const total = homeScore + awayScore
+      if (total === bet.pick_line) return 'push'
+      const over = total > bet.pick_line
+      return (bet.pick_side === 'over' ? over : !over) ? 'won' : 'lost'
+    }
+  }
+
+  // Fallback: legacy bets created before precise picks existed — parse the
+  // human-readable description as a best effort.
+  const desc = bet.description.toLowerCase()
+  const home = game.homeTeam.toLowerCase()
+  const away = game.awayTeam.toLowerCase()
   const mentionsHome = () => home.split(' ').some(w => w.length > 3 && desc.includes(w))
 
   if (bet.type === 'moneyline') {

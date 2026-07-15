@@ -16,6 +16,10 @@ export interface Bet {
   id: string; userId: string; sport: Sport; type: BetType
   description: string; odds: number; stake: number; status: Status
   bookmaker: string; createdAt: Date; settledAt?: Date; gameId?: string | null
+  // Exact pick captured at creation time (only set when linked to a real
+  // game) — lets settlement grade precisely instead of parsing description.
+  pickSide?: 'home' | 'away' | 'over' | 'under' | null
+  pickLine?: number | null
 }
 
 export interface AppUser {
@@ -36,6 +40,8 @@ function rowToBet(row: any): Bet {
     status:      row.status as Status,
     bookmaker:   row.sportsbook,
     gameId:      row.game_id ?? null,
+    pickSide:    row.pick_side ?? null,
+    pickLine:    row.pick_line !== null && row.pick_line !== undefined ? Number(row.pick_line) : null,
     createdAt:   new Date(row.created_at),
     settledAt:   row.settled_at ? new Date(row.settled_at) : undefined,
   }
@@ -308,6 +314,8 @@ export async function insertBet(
     stake:       bet.stake,
     status:      bet.status,
     sportsbook:  bet.bookmaker,
+    pick_side:   bet.pickSide ?? null,
+    pick_line:   bet.pickLine ?? null,
   }
   const doInsert = () => supabase.from('bets').insert(row).select().single()
   let { data, error } = await doInsert()

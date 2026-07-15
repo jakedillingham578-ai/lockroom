@@ -32,6 +32,7 @@ interface Bet {
   id: string; userId: string; sport: Sport; type: BetType
   description: string; odds: number; stake: number; status: Status
   bookmaker: string; createdAt: Date; settledAt?: Date; gameId?: string | null
+  pickSide?: 'home' | 'away' | 'over' | 'under' | null; pickLine?: number | null
   reactions?: Reaction[]; comments?: Comment[]
 }
 
@@ -815,9 +816,12 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
   const p = pnl(bet)
   const reactions = bet.reactions ?? []
   const comments = bet.comments ?? []
+  // Linked to a real game with an exact pick captured — this will grade
+  // itself automatically once the game ends, no manual tap needed.
+  const autoGradable = !!bet.gameId && !!bet.pickSide && (bet.type === 'spread' || bet.type === 'moneyline' || bet.type === 'over_under')
 
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (!isMe || bet.status !== 'pending') return
+    if (!isMe || bet.status !== 'pending' || autoGradable) return
     setSwipeStart(e.touches[0].clientX)
   }
   const handleTouchMove = (e: React.TouchEvent) => {
@@ -832,7 +836,7 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
 
   return (
     <div style={{ position: 'relative', marginBottom: 10, overflow: 'hidden', borderRadius: 16 }}>
-      {isMe && bet.status === 'pending' && (
+      {isMe && bet.status === 'pending' && !autoGradable && (
         <>
           <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '50%', background: C.winBg, display: 'flex', alignItems: 'center', paddingLeft: 20, borderRadius: '16px 0 0 16px' }}>
             <span style={{ color: C.win, fontWeight: 800, fontSize: 13 }}>✅ Won →</span>
@@ -931,7 +935,12 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
           </div>
         )}
 
-        {isMe && bet.status === 'pending' && (
+        {isMe && bet.status === 'pending' && autoGradable && (
+          <div style={{ textAlign: 'center', fontSize: 12, color: C.primary, fontWeight: 700, marginTop: 10, background: C.primaryBg, borderRadius: 8, padding: '7px 0' }}>
+            ⏳ Auto-grading when the game ends
+          </div>
+        )}
+        {isMe && bet.status === 'pending' && !autoGradable && (
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             {(['won', 'lost', 'push'] as const).map(s => (
               <button key={s} onClick={() => settleBet(bet.id, s)} style={{
@@ -941,7 +950,7 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
             ))}
           </div>
         )}
-        {isMe && bet.status === 'pending' && <div style={{ textAlign: 'center', fontSize: 11, color: C.muted, marginTop: 6 }}>swipe right = won · swipe left = lost</div>}
+        {isMe && bet.status === 'pending' && !autoGradable && <div style={{ textAlign: 'center', fontSize: 11, color: C.muted, marginTop: 6 }}>swipe right = won · swipe left = lost</div>}
       </div>
     </div>
   )
@@ -1892,6 +1901,10 @@ function AddBetPage() {
   const [spreadOpp, setSpreadOpp] = useState('')
   const [mlTeam, setMlTeam] = useState('')
   const [mlOpp, setMlOpp] = useState('')
+  // Exact pick captured only when linked to a real game — lets settlement
+  // grade precisely instead of parsing the human-readable description.
+  const [pickSide, setPickSide] = useState<'home' | 'away' | 'over' | 'under' | null>(null)
+  const [pickLine, setPickLine] = useState<number | null>(null)
   const [ouDir, setOuDir] = useState<'Over' | 'Under'>('Over')
   const [ouTotal, setOuTotal] = useState('')
   const [ouMatchup, setOuMatchup] = useState('')
@@ -1933,6 +1946,7 @@ function AddBetPage() {
   const clearGame = () => {
     setSelectedGame(null)
     setDesc('')
+    setPickSide(null); setPickLine(null)
   }
 
   // Tap a real line from ESPN → prefill the bet (user just adds a stake).
@@ -1941,6 +1955,8 @@ function AddBetPage() {
     const home = selectedGame.homeTeam, away = selectedGame.awayTeam
     setOdds(o.replace('+', '')); setConvertedFrom(null)
     setType(kind)
+    setPickSide(side)
+    setPickLine(line ? parseFloat(line) : null)
     if (kind === 'spread') {
       const team = side === 'home' ? home : away
       const opp = side === 'home' ? away : home
@@ -1984,8 +2000,25 @@ function AddBetPage() {
     else if (type === 'moneyline') finalDesc = [mlTeam, 'ML', mlOpp ? `vs ${mlOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'over_under') finalDesc = [ouMatchup, ouDir, ouTotal].filter(Boolean).join(' ')
     if (!finalDesc || !odds || !stake) return alert('Fill in description, odds, and stake.')
+
+    // If a game is linked but the pick wasn't captured via tap-to-add (e.g.
+    // the user typed the team name manually), try to derive it so this bet
+    // can still auto-settle instead of needing a manual Won/Lost tap.
+    let finalPickSide = pickSide, finalPickLine = pickLine
+    if (selectedGame && !finalPickSide) {
+      if (type === 'spread' || type === 'moneyline') {
+        const picked = type === 'spread' ? spreadTeam : mlTeam
+        if (picked === selectedGame.homeTeam) finalPickSide = 'home'
+        else if (picked === selectedGame.awayTeam) finalPickSide = 'away'
+        if (type === 'spread' && spreadLine) finalPickLine = parseFloat(spreadLine)
+      } else if (type === 'over_under' && ouTotal) {
+        finalPickSide = ouDir === 'Over' ? 'over' : 'under'
+        finalPickLine = parseFloat(ouTotal)
+      }
+    }
+
     setPosting(true)
-    const error = await addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null })
+    const error = await addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null, pickSide: finalPickSide, pickLine: finalPickLine })
     setPosting(false)
     if (error) { alert(`Couldn't post your bet: ${error}\n\nTry again — if it keeps happening, sign out and back in.`); return }
     setDone(true)
@@ -2168,7 +2201,7 @@ function AddBetPage() {
         )}
       </div>
 
-      <ChipRow label="Bet Type" options={BET_TYPES.map(([, v]) => v)} value={BET_TYPES.find(([k]) => k === type)?.[1] ?? 'Spread'} onChange={v => setType((BET_TYPES.find(([, l]) => l === v)?.[0]) ?? 'spread')} />
+      <ChipRow label="Bet Type" options={BET_TYPES.map(([, v]) => v)} value={BET_TYPES.find(([k]) => k === type)?.[1] ?? 'Spread'} onChange={v => { setType((BET_TYPES.find(([, l]) => l === v)?.[0]) ?? 'spread'); setPickSide(null); setPickLine(null) }} />
 
       <div style={{ marginBottom: 16 }}>
         {type === 'spread' && (
