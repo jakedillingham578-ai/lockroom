@@ -3387,7 +3387,7 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
         const odds = await import('./lib/odds')
         const status = await odds.fetchGameStatus(b.sport, b.league, b.gameId)
         if (status) {
-          setGame(prev => ({ ...(prev ?? {} as PGame), completed: status.completed, homeScore: status.homeScore, awayScore: status.awayScore } as PGame))
+          setGame(prev => ({ ...(prev ?? {} as PGame), completed: status.completed, homeScore: status.homeScore, awayScore: status.awayScore, homeTeam: status.homeTeam, awayTeam: status.awayTeam } as PGame))
           // Auto-grade once the game is final and digits are assigned.
           if (b.status === 'locked' && status.completed && status.homeScore != null && status.awayScore != null && b.homeDigits && b.awayDigits) {
             const col = b.homeDigits.indexOf(status.homeScore % 10)
@@ -3489,6 +3489,9 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Squares <span style={{ color: C.gold, fontSize: 11 }}>⭐ PRO</span></h2>
       <p style={{ color: C.muted, fontSize: 13, marginBottom: 4 }}>{groupName}</p>
+      <p style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>
+        {game?.awayTeam && game?.homeTeam ? `${game.awayTeam} @ ${game.homeTeam}` : `${board.sport} game`}
+      </p>
       <p style={{ color: C.primary, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
         {board.status === 'open' && `${claimedCount}/100 squares claimed`}
         {board.status === 'locked' && `Locked · waiting on final score${game?.completed ? '' : '…'}`}

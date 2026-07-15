@@ -350,7 +350,7 @@ export async function fetchBoxscoreStat(
 // when to grade, without waiting for it to reappear in a scoreboard fetch.
 export async function fetchGameStatus(
   sportLabel: string, league: string, eventId: string
-): Promise<{ completed: boolean; homeScore: number | null; awayScore: number | null } | null> {
+): Promise<{ completed: boolean; homeScore: number | null; awayScore: number | null; homeTeam: string; awayTeam: string } | null> {
   const path = ESPN_PATHS[sportLabel]
   if (!path) return null
   try {
@@ -366,6 +366,8 @@ export async function fetchGameStatus(
       completed,
       homeScore: home?.score != null ? parseInt(home.score) : null,
       awayScore: away?.score != null ? parseInt(away.score) : null,
+      homeTeam: home?.team?.displayName ?? '',
+      awayTeam: away?.team?.displayName ?? '',
     }
   } catch {
     return null
