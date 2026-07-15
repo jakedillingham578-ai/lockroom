@@ -2727,40 +2727,6 @@ function ProfilePage() {
 }
 
 // ─── Competition Detail Views ─────────────────────────────────────────────────
-function BestRecordComp({ users, bets, onBack }: { users: User[], bets: any[], onBack: () => void }) {
-  const { groupName } = useApp()
-  const now = Date.now()
-  const weekBets = bets.filter(b => b.status !== 'pending' && (now - b.createdAt.getTime()) < 7 * 864e5)
-  const standings = users.map(u => {
-    const ub = weekBets.filter((b: any) => b.userId === u.id)
-    const wins = ub.filter((b: any) => b.status === 'won').length
-    const losses = ub.filter((b: any) => b.status === 'lost').length
-    const profit = ub.reduce((sum: number, b: any) => b.status === 'won' ? sum + (b.odds > 0 ? b.stake * b.odds / 100 : b.stake * 100 / Math.abs(b.odds)) : b.status === 'lost' ? sum - b.stake : sum, 0)
-    return { ...u, wins, losses, profit }
-  }).sort((a, b) => (b.wins - b.losses) - (a.wins - a.losses) || b.profit - a.profit)
-
-  return (
-    <div>
-      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
-      <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Weekly Best Record</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 20 }}>4 days left · {groupName}</p>
-      <div style={{ background: C.goldBg, border: `1px solid rgba(180,83,9,0.2)`, borderRadius: 10, padding: '10px 14px', marginBottom: 20 }}>
-        <div style={{ color: C.gold, fontWeight: 700, fontSize: 13 }}>Prize: Bragging rights + winner picks next group dinner</div>
-      </div>
-      {standings.map((u, i) => (
-        <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.bgCard, border: `1px solid ${i === 0 ? C.gold : C.border}`, borderRadius: 14, padding: '12px 14px', marginBottom: 8 }}>
-          <div style={{ width: 28, fontWeight: 800, fontSize: 16, color: i === 0 ? C.gold : C.muted }}>{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i+1}`}</div>
-          <Avatar name={u.displayName} size={34} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{u.displayName}</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}><span style={{ color: '#4ade80' }}>{u.wins}W</span> - <span style={{ color: '#f87171' }}>{u.losses}L</span></div>
-          </div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: u.profit >= 0 ? C.win : C.loss }}>{u.profit >= 0 ? '+' : ''}${u.profit.toFixed(2)}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
 
 function BracketComp({ users, bets, onBack }: { users: User[], bets: Bet[], onBack: () => void }) {
   const { me, groupName, groupId } = useApp()
@@ -3354,13 +3320,9 @@ function CompetitionsPage() {
   const [showModal, setShowModal] = useState(false)
   const [activeComp, setActiveComp] = useState<string | null>(null)
 
-  if (activeComp === 'best-record') return <BestRecordComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
   if (activeComp === 'bracket') return <BracketComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
   if (activeComp === 'pickem') return <PickemComp users={users} onBack={() => setActiveComp(null)} />
   if (activeComp === 'survivor') return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
-
-  // Real countdown to the weekly reset (every Monday) instead of a hardcoded number.
-  const daysUntilMonday = (8 - new Date().getDay()) % 7 || 7
 
   return (
     <div>
@@ -3374,33 +3336,38 @@ function CompetitionsPage() {
         )}
       </div>
 
-      {/* This week's real leaderboard snapshot */}
-      <div onClick={() => setActiveComp('best-record')} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 20, borderLeft: `4px solid ${C.win}`, cursor: 'pointer' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ background: C.bgEl, color: C.muted, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 600 }}>This Week</span>
-          <span style={{ color: C.muted, fontSize: 11, fontWeight: 700 }}>resets in {daysUntilMonday}d</span>
+      {/* Bracket — the flagship free game */}
+      <div onClick={() => setActiveComp('bracket')} style={{ background: 'linear-gradient(135deg, rgba(75,156,211,0.18), rgba(75,156,211,0.06))', border: `1.5px solid ${C.primary}`, borderRadius: 18, padding: 20, marginBottom: 24, cursor: 'pointer' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+          <span style={{ background: C.primaryBg, color: C.primary, padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 800 }}>FREE GAME</span>
+          <span style={{ fontSize: 30 }}>🏆</span>
         </div>
-        <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 10 }}>Weekly Best Record</div>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {users.map(u => <Avatar key={u.id} name={u.displayName} size={28} />)}
+        <div style={{ fontWeight: 900, fontSize: 22, marginBottom: 4 }}>Bracket</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 14, lineHeight: 1.5 }}>
+          Real weekly elimination — seeded by real betting profit. Lose your matchup, you're out. Fully automatic, no clicking required.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {users.map(u => <Avatar key={u.id} name={u.displayName} size={26} />)}
+          </div>
+          <div style={{ color: C.primary, fontSize: 13, fontWeight: 800 }}>Open →</div>
         </div>
       </div>
 
-      {/* Games — free for everyone */}
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Games</div>
+      {/* More games */}
+      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>More Games</div>
       {[
-        { icon: '🏆', title: 'Bracket', desc: "Real weekly elimination — seeded by real profit, no clicking required.", id: 'bracket' },
         { icon: '🗳️', title: "Weekly Pick'em", desc: 'Everyone picks the same slate. Most correct wins.', id: 'pickem' },
         { icon: '🏝️', title: 'Survivor Pool', desc: "Same featured game every day. Miss it, you're out.", id: 'survivor' },
       ].map(c => (
         <div key={c.title} onClick={() => setActiveComp(c.id)}
-          style={{ background: C.bgCard, border: `1px solid ${C.primary}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer' }}>
-          <div style={{ fontSize: 28, flexShrink: 0 }}>{c.icon}</div>
+          style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer' }}>
+          <div style={{ fontSize: 26, flexShrink: 0 }}>{c.icon}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>{c.title}</div>
             <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{c.desc}</div>
           </div>
-          <div style={{ color: C.primary, fontSize: 12, fontWeight: 700 }}>Open →</div>
+          <div style={{ color: C.muted, fontSize: 12, fontWeight: 700 }}>Open →</div>
         </div>
       ))}
 
