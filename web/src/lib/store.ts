@@ -20,6 +20,11 @@ export interface Bet {
   // game) — lets settlement grade precisely instead of parsing description.
   pickSide?: 'home' | 'away' | 'over' | 'under' | null
   pickLine?: number | null
+  // Player prop: which player + stat category (pickSide/pickLine above hold
+  // the over/under direction and the line for props too).
+  propPlayerId?: string | null
+  propPlayerName?: string | null
+  propStat?: string | null
 }
 
 export interface AppUser {
@@ -42,6 +47,9 @@ function rowToBet(row: any): Bet {
     gameId:      row.game_id ?? null,
     pickSide:    row.pick_side ?? null,
     pickLine:    row.pick_line !== null && row.pick_line !== undefined ? Number(row.pick_line) : null,
+    propPlayerId:   row.prop_player_id ?? null,
+    propPlayerName: row.prop_player_name ?? null,
+    propStat:       row.prop_stat ?? null,
     createdAt:   new Date(row.created_at),
     settledAt:   row.settled_at ? new Date(row.settled_at) : undefined,
   }
@@ -316,6 +324,9 @@ export async function insertBet(
     sportsbook:  bet.bookmaker,
     pick_side:   bet.pickSide ?? null,
     pick_line:   bet.pickLine ?? null,
+    prop_player_id:   bet.propPlayerId ?? null,
+    prop_player_name: bet.propPlayerName ?? null,
+    prop_stat:        bet.propStat ?? null,
   }
   const doInsert = () => supabase.from('bets').insert(row).select().single()
   let { data, error } = await doInsert()

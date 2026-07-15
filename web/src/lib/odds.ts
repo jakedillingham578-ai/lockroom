@@ -41,8 +41,11 @@ export type ESPNGame = {
   name: string                  // "Buffalo Bills at Kansas City Chiefs"
   shortName: string             // "BUF @ KC"
   sport: string                 // our label e.g. "NFL"
+  league: string                 // ESPN league slug this event was fetched from, e.g. "mlb"
   homeTeam: string
   awayTeam: string
+  homeTeamId?: string
+  awayTeamId?: string
   homeScore: number | null
   awayScore: number | null
   completed: boolean
@@ -50,6 +53,33 @@ export type ESPNGame = {
   displayClock?: string         // "4th 2:34" when live
   venue?: string
   odds?: GameOdds               // live lines from ESPN (DraftKings), when available
+}
+
+// Which broad sports have simple, flat per-player box scores we can use for
+// player props (basketball/baseball). Football/hockey split stats into
+// multiple categorized tables per athlete — not supported yet.
+export const PROP_CAPABLE_SPORTS = new Set(['NBA', 'WNBA', 'NCAAM', 'NCAAW', 'MLB', 'CBB'])
+
+// Stat categories offered per sport, mapped to the exact ESPN box-score
+// column label. `parse` extracts a plain number from that column's raw
+// string (some columns are compound like "5-11" made-attempted).
+export const PROP_STATS: Record<string, { key: string; label: string; parse: (raw: string) => number | null }[]> = {
+  basketball: [
+    { key: 'PTS', label: 'Points', parse: n => parseFloat(n) },
+    { key: 'REB', label: 'Rebounds', parse: n => parseFloat(n) },
+    { key: 'AST', label: 'Assists', parse: n => parseFloat(n) },
+    { key: 'STL', label: 'Steals', parse: n => parseFloat(n) },
+    { key: 'BLK', label: 'Blocks', parse: n => parseFloat(n) },
+    { key: '3PT', label: '3-Pointers Made', parse: n => parseFloat((n.split('-')[0] ?? '')) },
+  ],
+  baseball: [
+    { key: 'H', label: 'Hits', parse: n => parseFloat(n) },
+    { key: 'R', label: 'Runs', parse: n => parseFloat(n) },
+    { key: 'RBI', label: 'RBIs', parse: n => parseFloat(n) },
+    { key: 'HR', label: 'Home Runs', parse: n => parseFloat(n) },
+    { key: 'BB', label: 'Walks', parse: n => parseFloat(n) },
+    { key: 'K', label: 'Strikeouts', parse: n => parseFloat(n) },
+  ],
 }
 
 // Parse ESPN's odds block into clean spread / total / moneyline with American prices.
@@ -82,12 +112,12 @@ type ESPNEvent = {
   shortName: string
   status: { type: { completed: boolean; description: string; state: string }; displayClock: string }
   competitions: {
-    competitors: { homeAway: string; team: { displayName: string }; score: string }[]
+    competitors: { homeAway: string; team: { id?: string; displayName: string }; score: string }[]
     venue?: { fullName: string }
   }[]
 }
 
-function parseEvent(event: ESPNEvent, sport: string): ESPNGame {
+function parseEvent(event: ESPNEvent, sport: string, league: string): ESPNGame {
   const comp = event.competitions[0]
   const home = comp.competitors.find(c => c.homeAway === 'home')
   const away = comp.competitors.find(c => c.homeAway === 'away')
@@ -100,8 +130,11 @@ function parseEvent(event: ESPNEvent, sport: string): ESPNGame {
     name: event.name,
     shortName: event.shortName,
     sport,
+    league,
     homeTeam: home?.team.displayName ?? '',
     awayTeam: away?.team.displayName ?? '',
+    homeTeamId: home?.team.id,
+    awayTeamId: away?.team.id,
     homeScore: completed || inProgress ? parseInt(home?.score ?? '-1') : null,
     awayScore: completed || inProgress ? parseInt(away?.score ?? '-1') : null,
     completed,
@@ -201,7 +234,7 @@ export async function fetchScoreboard(sportLabel: string, dates?: string): Promi
       const res = await fetch(`${ESPN}/${path.sport}/${league}/scoreboard${qs}`)
       if (!res.ok) throw new Error(`ESPN ${res.status}`)
       const data = await res.json()
-      return (data.events ?? []).map((e: ESPNEvent) => parseEvent(e, sportLabel))
+      return (data.events ?? []).map((e: ESPNEvent) => parseEvent(e, sportLabel, league))
     })
   )
   const games = perLeague
@@ -248,6 +281,69 @@ export async function searchGames(query: string, sportLabel?: string): Promise<E
     g.awayTeam.toLowerCase().includes(q) ||
     g.name.toLowerCase().includes(q)
   )
+}
+
+export type RosterPlayer = { id: string; name: string; position?: string }
+
+// Full season roster for a team — available anytime (unlike the game-day
+// lineup, which ESPN doesn't post until close to first pitch/tipoff).
+export async function fetchTeamRoster(sportLabel: string, league: string, teamId: string): Promise<RosterPlayer[]> {
+  const path = ESPN_PATHS[sportLabel]
+  if (!path) return []
+  try {
+    const res = await fetch(`${ESPN}/${path.sport}/${league}/teams/${teamId}/roster`)
+    if (!res.ok) return []
+    const data = await res.json()
+    const groups = data.athletes ?? []
+    const players: RosterPlayer[] = []
+    // Two shapes exist across leagues: grouped-by-position ({ items: [...] },
+    // e.g. MLB) and a flat list of athlete objects directly (e.g. WNBA).
+    for (const g of groups) {
+      if (Array.isArray(g.items)) {
+        for (const a of g.items) players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation })
+      } else if (g.id && g.displayName) {
+        players.push({ id: g.id, name: g.displayName, position: g.position?.abbreviation })
+      }
+    }
+    return players
+  } catch {
+    return []
+  }
+}
+
+// Look up one player's stat value from a completed game's real box score.
+// Returns null if the game isn't final yet, the player didn't appear, or
+// the stat column isn't present (e.g. a pitcher has no rebounds).
+export async function fetchBoxscoreStat(
+  sportLabel: string, league: string, eventId: string, playerId: string, statKey: string
+): Promise<number | null> {
+  const path = ESPN_PATHS[sportLabel]
+  if (!path) return null
+  const group = path.sport === 'basketball' ? PROP_STATS.basketball : path.sport === 'baseball' ? PROP_STATS.baseball : []
+  const statDef = group.find(s => s.key === statKey)
+  if (!statDef) return null
+  try {
+    const res = await fetch(`${ESPN}/${path.sport}/${league}/summary?event=${eventId}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    const teams = data.boxscore?.players ?? []
+    for (const team of teams) {
+      for (const statGroup of team.statistics ?? []) {
+        const labels: string[] = statGroup.labels ?? []
+        const idx = labels.indexOf(statKey)
+        if (idx === -1) continue
+        const athlete = (statGroup.athletes ?? []).find((a: any) => a.athlete?.id === playerId)
+        if (!athlete) continue
+        const raw = athlete.stats?.[idx]
+        if (raw == null) continue
+        const val = statDef.parse(raw)
+        if (val !== null && !isNaN(val)) return val
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 // Format game time nicely

@@ -2,7 +2,7 @@
 // Auto-settlement engine — powered by ESPN free API (no key needed)
 
 import { supabase } from './supabase'
-import { fetchAllScoreboards, recentDateRange, type ESPNGame } from './odds'
+import { fetchAllScoreboards, fetchBoxscoreStat, recentDateRange, type ESPNGame } from './odds'
 
 type BetRow = {
   id: string
@@ -14,6 +14,20 @@ type BetRow = {
   description: string
   pick_side: string | null
   pick_line: number | null
+  prop_player_id: string | null
+  prop_stat: string | null
+}
+
+// Player prop: fetch the real box score and compare the player's actual
+// stat to the line. Returns null if the game's box score isn't posted yet.
+async function evaluatePropBet(bet: BetRow, game: ESPNGame): Promise<'won' | 'lost' | 'push' | null> {
+  if (!game.completed) return null
+  if (!bet.prop_player_id || !bet.prop_stat || bet.pick_line === null || !bet.pick_side) return null
+  const value = await fetchBoxscoreStat(game.sport, game.league, game.id, bet.prop_player_id, bet.prop_stat)
+  if (value === null) return null
+  if (value === bet.pick_line) return 'push'
+  const over = value > bet.pick_line
+  return (bet.pick_side === 'over' ? over : !over) ? 'won' : 'lost'
 }
 
 function evaluateBet(bet: BetRow, game: ESPNGame): 'won' | 'lost' | 'push' | null {
@@ -121,7 +135,9 @@ export async function settlePendingBets(): Promise<{ settled: number; errors: st
     const game = gameMap.get(bet.game_id!)
     if (!game) continue
 
-    const result = evaluateBet(bet as BetRow, game)
+    const result = bet.type === 'prop'
+      ? await evaluatePropBet(bet as BetRow, game)
+      : evaluateBet(bet as BetRow, game)
     if (!result) continue
 
     const { error: updateErr } = await supabase

@@ -2,6 +2,7 @@ import React, { useState, useEffect, createContext, useContext, useCallback, use
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
 import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
+import { PROP_CAPABLE_SPORTS, PROP_STATS } from './lib/odds'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
@@ -33,6 +34,7 @@ interface Bet {
   description: string; odds: number; stake: number; status: Status
   bookmaker: string; createdAt: Date; settledAt?: Date; gameId?: string | null
   pickSide?: 'home' | 'away' | 'over' | 'under' | null; pickLine?: number | null
+  propPlayerId?: string | null; propPlayerName?: string | null; propStat?: string | null
   reactions?: Reaction[]; comments?: Comment[]
 }
 
@@ -818,7 +820,10 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
   const comments = bet.comments ?? []
   // Linked to a real game with an exact pick captured — this will grade
   // itself automatically once the game ends, no manual tap needed.
-  const autoGradable = !!bet.gameId && !!bet.pickSide && (bet.type === 'spread' || bet.type === 'moneyline' || bet.type === 'over_under')
+  const autoGradable = !!bet.gameId && !!bet.pickSide && (
+    bet.type === 'spread' || bet.type === 'moneyline' || bet.type === 'over_under' ||
+    (bet.type === 'prop' && !!bet.propPlayerId && !!bet.propStat)
+  )
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!isMe || bet.status !== 'pending' || autoGradable) return
@@ -1905,6 +1910,16 @@ function AddBetPage() {
   // grade precisely instead of parsing the human-readable description.
   const [pickSide, setPickSide] = useState<'home' | 'away' | 'over' | 'under' | null>(null)
   const [pickLine, setPickLine] = useState<number | null>(null)
+
+  // Player props — real roster search + real box-score auto-settlement.
+  const [propTeamSide, setPropTeamSide] = useState<'home' | 'away'>('home')
+  const [propRoster, setPropRoster] = useState<import('./lib/odds').RosterPlayer[]>([])
+  const [propRosterLoading, setPropRosterLoading] = useState(false)
+  const [propQuery, setPropQuery] = useState('')
+  const [propPlayer, setPropPlayer] = useState<import('./lib/odds').RosterPlayer | null>(null)
+  const [propStatKey, setPropStatKey] = useState('')
+  const [propDir, setPropDir] = useState<'Over' | 'Under'>('Over')
+  const [propLine, setPropLine] = useState('')
   const [ouDir, setOuDir] = useState<'Over' | 'Under'>('Over')
   const [ouTotal, setOuTotal] = useState('')
   const [ouMatchup, setOuMatchup] = useState('')
@@ -1947,7 +1962,25 @@ function AddBetPage() {
     setSelectedGame(null)
     setDesc('')
     setPickSide(null); setPickLine(null)
+    setPropPlayer(null); setPropRoster([]); setPropStatKey(''); setPropLine(''); setPropQuery('')
   }
+
+  // Load the real season roster for whichever team side is selected, once a
+  // game is linked and the sport supports player props.
+  useEffect(() => {
+    if (type !== 'prop' || !selectedGame) return
+    const teamId = propTeamSide === 'home' ? selectedGame.homeTeamId : selectedGame.awayTeamId
+    if (!teamId) { setPropRoster([]); return }
+    let cancelled = false
+    setPropRosterLoading(true)
+    setPropPlayer(null)
+    import('./lib/odds').then(async ({ fetchTeamRoster, PROP_CAPABLE_SPORTS }) => {
+      if (!PROP_CAPABLE_SPORTS.has(selectedGame.sport)) { if (!cancelled) setPropRoster([]); return }
+      const roster = await fetchTeamRoster(selectedGame.sport, selectedGame.league, teamId)
+      if (!cancelled) setPropRoster(roster)
+    }).finally(() => { if (!cancelled) setPropRosterLoading(false) })
+    return () => { cancelled = true }
+  }, [type, selectedGame, propTeamSide])
 
   // Tap a real line from ESPN → prefill the bet (user just adds a stake).
   const applyLine = (kind: 'spread' | 'moneyline' | 'over_under', side: 'home' | 'away' | 'over' | 'under', line: string, o: string) => {
@@ -1999,13 +2032,24 @@ function AddBetPage() {
     else if (type === 'spread') finalDesc = [spreadTeam, spreadLine, spreadOpp ? `vs ${spreadOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'moneyline') finalDesc = [mlTeam, 'ML', mlOpp ? `vs ${mlOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'over_under') finalDesc = [ouMatchup, ouDir, ouTotal].filter(Boolean).join(' ')
+    else if (type === 'prop' && propPlayer && propStatKey && propLine) {
+      const statLabel = (selectedGame?.sport === 'MLB' || selectedGame?.sport === 'CBB' ? PROP_STATS.baseball : PROP_STATS.basketball).find(s => s.key === propStatKey)?.label ?? propStatKey
+      finalDesc = `${propPlayer.name} ${propDir} ${propLine} ${statLabel}`
+    }
     if (!finalDesc || !odds || !stake) return alert('Fill in description, odds, and stake.')
 
     // If a game is linked but the pick wasn't captured via tap-to-add (e.g.
     // the user typed the team name manually), try to derive it so this bet
     // can still auto-settle instead of needing a manual Won/Lost tap.
     let finalPickSide = pickSide, finalPickLine = pickLine
-    if (selectedGame && !finalPickSide) {
+    let finalPropPlayerId: string | null = null, finalPropPlayerName: string | null = null, finalPropStat: string | null = null
+    if (type === 'prop' && propPlayer && propStatKey && propLine) {
+      finalPickSide = propDir === 'Over' ? 'over' : 'under'
+      finalPickLine = parseFloat(propLine)
+      finalPropPlayerId = propPlayer.id
+      finalPropPlayerName = propPlayer.name
+      finalPropStat = propStatKey
+    } else if (selectedGame && !finalPickSide) {
       if (type === 'spread' || type === 'moneyline') {
         const picked = type === 'spread' ? spreadTeam : mlTeam
         if (picked === selectedGame.homeTeam) finalPickSide = 'home'
@@ -2018,7 +2062,11 @@ function AddBetPage() {
     }
 
     setPosting(true)
-    const error = await addBet({ userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book, gameId: selectedGame?.id ?? null, pickSide: finalPickSide, pickLine: finalPickLine })
+    const error = await addBet({
+      userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book,
+      gameId: selectedGame?.id ?? null, pickSide: finalPickSide, pickLine: finalPickLine,
+      propPlayerId: finalPropPlayerId, propPlayerName: finalPropPlayerName, propStat: finalPropStat,
+    })
     setPosting(false)
     if (error) { alert(`Couldn't post your bet: ${error}\n\nTry again — if it keeps happening, sign out and back in.`); return }
     setDone(true)
@@ -2273,10 +2321,90 @@ function AddBetPage() {
             </button>
           </>
         )}
-        {(type === 'prop' || type === 'other') && (
+        {type === 'prop' && selectedGame && PROP_CAPABLE_SPORTS.has(selectedGame.sport) ? (
+          <>
+            <div style={labelStyle}>Player Prop <span style={{ color: C.primary, fontWeight: 600, fontSize: 10 }}>REAL ROSTER · AUTO-GRADED</span></div>
+
+            {/* Team toggle */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              {(['away', 'home'] as const).map(side => (
+                <button key={side} onClick={() => setPropTeamSide(side)} style={{
+                  flex: 1, padding: '9px 0', borderRadius: 10, cursor: 'pointer', fontWeight: 700, fontSize: 13,
+                  border: `1.5px solid ${propTeamSide === side ? C.primary : C.border}`,
+                  background: propTeamSide === side ? C.primaryBg : C.bgEl,
+                  color: propTeamSide === side ? C.primary : C.text,
+                }}>{side === 'home' ? selectedGame.homeTeam : selectedGame.awayTeam}</button>
+              ))}
+            </div>
+
+            {/* Player search */}
+            {propPlayer ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.primaryBg, border: `1.5px solid ${C.primary}`, borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+                <div style={{ flex: 1, fontWeight: 700, fontSize: 14 }}>{propPlayer.name} {propPlayer.position ? <span style={{ color: C.muted, fontWeight: 600, fontSize: 12 }}>· {propPlayer.position}</span> : null}</div>
+                <button onClick={() => setPropPlayer(null)} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 12, cursor: 'pointer' }}>change</button>
+              </div>
+            ) : (
+              <>
+                <input value={propQuery} onChange={e => setPropQuery(e.target.value)} placeholder={propRosterLoading ? 'Loading roster…' : 'Search player name...'} style={{ ...inputStyle, marginBottom: 8 }} />
+                <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', maxHeight: 220, overflowY: 'auto', marginBottom: 10 }}>
+                  {propRosterLoading && <div style={{ padding: 14, color: C.muted, fontSize: 13, textAlign: 'center' }}>Loading roster…</div>}
+                  {!propRosterLoading && propRoster.length === 0 && <div style={{ padding: 14, color: C.muted, fontSize: 13, textAlign: 'center' }}>No roster found for this team.</div>}
+                  {!propRosterLoading && propRoster
+                    .filter(p => p.name.toLowerCase().includes(propQuery.toLowerCase()))
+                    .slice(0, 20)
+                    .map((p, i, arr) => (
+                      <button key={p.id} onClick={() => setPropPlayer(p)} style={{
+                        width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer',
+                        borderBottom: i < arr.length - 1 ? `1px solid ${C.border}` : 'none',
+                      }}>
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</span>
+                        {p.position && <span style={{ color: C.muted, fontSize: 12 }}>{p.position}</span>}
+                      </button>
+                    ))}
+                </div>
+              </>
+            )}
+
+            {/* Stat category */}
+            {propPlayer && (
+              <>
+                <div style={labelStyle}>Stat</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                  {(selectedGame.sport === 'MLB' || selectedGame.sport === 'CBB' ? PROP_STATS.baseball : PROP_STATS.basketball).map(s => (
+                    <button key={s.key} onClick={() => setPropStatKey(s.key)} style={{
+                      padding: '8px 14px', borderRadius: 99, cursor: 'pointer', fontWeight: 600, fontSize: 13,
+                      border: `1px solid ${propStatKey === s.key ? C.primary : C.border}`,
+                      background: propStatKey === s.key ? C.primaryBg : C.bgCard,
+                      color: propStatKey === s.key ? C.primary : C.muted,
+                    }}>{s.label}</button>
+                  ))}
+                </div>
+
+                {/* Over/Under + line */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                  {(['Over', 'Under'] as const).map(d => (
+                    <button key={d} onClick={() => setPropDir(d)} style={{
+                      flex: 1, padding: '9px 0', borderRadius: 10, cursor: 'pointer', fontWeight: 700, fontSize: 13,
+                      border: `1.5px solid ${propDir === d ? C.primary : C.border}`,
+                      background: propDir === d ? C.primaryBg : C.bgEl,
+                      color: propDir === d ? C.primary : C.text,
+                    }}>{d}</button>
+                  ))}
+                  <input value={propLine} onChange={e => setPropLine(e.target.value)} placeholder="Line, e.g. 27.5" inputMode="decimal" style={{ ...inputStyle, flex: 1, marginBottom: 0 }} />
+                </div>
+              </>
+            )}
+          </>
+        ) : (type === 'prop' || type === 'other') && (
           <>
             <div style={labelStyle}>Bet Description</div>
             <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="e.g. LeBron Over 27.5 pts" style={{ ...inputStyle, height: 80, resize: 'none', fontFamily: 'inherit' }} />
+            {type === 'prop' && (
+              <div style={{ fontSize: 11, color: C.muted, marginTop: -4 }}>
+                Link a real game above (NBA/WNBA/college hoops/MLB) to pick from the actual roster and auto-settle from the box score.
+              </div>
+            )}
           </>
         )}
       </div>
