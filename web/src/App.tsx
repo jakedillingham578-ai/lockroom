@@ -1911,8 +1911,7 @@ function ParlayLegPicker({ onAdd }: { onAdd: (leg: ParlayLeg) => void }) {
     setLoading(true); setSearched(true)
     try {
       const { searchGames } = await import('./lib/odds')
-      const r = await searchGames(query)
-      setResults(r.slice(0, 8))
+      setResults(await searchGames(query))
     } catch { setResults([]) }
     setLoading(false)
   }
@@ -1977,7 +1976,7 @@ function ParlayLegPicker({ onAdd }: { onAdd: (leg: ParlayLeg) => void }) {
         <div style={{ textAlign: 'center', padding: 10, color: C.muted, fontSize: 12 }}>No games found</div>
       )}
       {results.length > 0 && (
-        <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', marginTop: 8 }}>
+        <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', overflowY: 'auto', maxHeight: 320, marginTop: 8 }}>
           {results.map((g, i) => (
             <button key={g.id} onClick={() => setGame(g)} style={{ width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer' }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{g.awayTeam} @ {g.homeTeam}</div>
@@ -2038,7 +2037,7 @@ function AddBetPage() {
     try {
       const { searchGames: search } = await import('./lib/odds')
       const results = await search(gameQuery, sport !== 'Other' ? sport : undefined)
-      setGameResults(results.slice(0, 8))
+      setGameResults(results)
     } catch (e) {
       setGameResults([])
     }
@@ -3411,7 +3410,7 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
     setSearching(true)
     try {
       const { searchGames } = await import('./lib/odds')
-      setResults((await searchGames(query)).slice(0, 8))
+      setResults(await searchGames(query))
     } catch { setResults([]) }
     setSearching(false)
   }
@@ -3471,7 +3470,7 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
           <button onClick={search} style={{ ...btnStyle, padding: '0 16px', fontSize: 13, flexShrink: 0 }}>{searching ? '...' : 'Search'}</button>
         </div>
         {results.length > 0 && (
-          <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', marginTop: 8 }}>
+          <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', overflowY: 'auto', maxHeight: 320, marginTop: 8 }}>
             {results.map((g, i) => (
               <button key={g.id} onClick={() => startBoard(g)} disabled={starting} style={{ width: '100%', textAlign: 'left', padding: '12px 14px', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer' }}>
                 <div style={{ fontWeight: 700, fontSize: 13 }}>{g.awayTeam} @ {g.homeTeam}</div>
