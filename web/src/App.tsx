@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup, type ParlayLeg } from './lib/store'
 import { PROP_CAPABLE_SPORTS, PROP_STATS } from './lib/odds'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
@@ -35,6 +35,7 @@ interface Bet {
   bookmaker: string; createdAt: Date; settledAt?: Date; gameId?: string | null
   pickSide?: 'home' | 'away' | 'over' | 'under' | null; pickLine?: number | null
   propPlayerId?: string | null; propPlayerName?: string | null; propStat?: string | null
+  legs?: ParlayLeg[] | null
   reactions?: Reaction[]; comments?: Comment[]
 }
 
@@ -820,9 +821,11 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
   const comments = bet.comments ?? []
   // Linked to a real game with an exact pick captured — this will grade
   // itself automatically once the game ends, no manual tap needed.
-  const autoGradable = !!bet.gameId && !!bet.pickSide && (
-    bet.type === 'spread' || bet.type === 'moneyline' || bet.type === 'over_under' ||
-    (bet.type === 'prop' && !!bet.propPlayerId && !!bet.propStat)
+  const autoGradable = (bet.type === 'parlay' && !!bet.legs?.length) || (
+    !!bet.gameId && !!bet.pickSide && (
+      bet.type === 'spread' || bet.type === 'moneyline' || bet.type === 'over_under' ||
+      (bet.type === 'prop' && !!bet.propPlayerId && !!bet.propStat)
+    )
   )
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -868,7 +871,7 @@ function BetCard({ bet, isMe = false }: { bet: Bet; isMe?: boolean }) {
 
         {(() => {
           const legs = bet.type === 'parlay'
-            ? bet.description.replace(/^\d+-leg:\s*/i, '').split(' + ')
+            ? (bet.legs?.length ? bet.legs.map(l => l.description) : bet.description.replace(/^\d+-leg:\s*/i, '').split(' + '))
             : [bet.description]
           const isParlay = bet.type === 'parlay'
           return (
@@ -1894,13 +1897,106 @@ function pctToAmericanOdds(pct: number): number {
     : Math.round(((1 - p) / p) * 100)
 }
 
+// One leg of a parlay: search a real game, tap a real line, done. Each leg
+// can be a completely different game/sport — settlement grades every leg
+// independently against its own game's real result.
+function ParlayLegPicker({ onAdd }: { onAdd: (leg: ParlayLeg) => void }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<import('./lib/odds').ESPNGame[]>([])
+  const [loading, setLoading] = useState(false)
+  const [searched, setSearched] = useState(false)
+  const [game, setGame] = useState<import('./lib/odds').ESPNGame | null>(null)
+
+  const search = async () => {
+    setLoading(true); setSearched(true)
+    try {
+      const { searchGames } = await import('./lib/odds')
+      const r = await searchGames(query)
+      setResults(r.slice(0, 8))
+    } catch { setResults([]) }
+    setLoading(false)
+  }
+
+  const pick = (kind: 'spread' | 'moneyline' | 'over_under', side: 'home' | 'away' | 'over' | 'under', line: string) => {
+    if (!game) return
+    const home = game.homeTeam, away = game.awayTeam
+    let description = ''
+    if (kind === 'spread') description = `${side === 'home' ? home : away} ${line}`
+    else if (kind === 'moneyline') description = `${side === 'home' ? home : away} ML`
+    else description = `${away}/${home} ${side === 'over' ? 'O' : 'U'} ${line}`
+    onAdd({
+      gameId: game.id, sport: game.sport, league: game.league, type: kind,
+      pickSide: side, pickLine: line ? parseFloat(line) : null, description,
+    })
+    setGame(null); setResults([]); setQuery(''); setSearched(false)
+  }
+
+  if (game) {
+    const od = game.odds
+    return (
+      <div style={{ background: C.bgCard, border: `1.5px solid ${C.primary}`, borderRadius: 14, padding: '12px 14px', marginBottom: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>{game.awayTeam} @ {game.homeTeam}</div>
+          <button onClick={() => setGame(null)} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 12, cursor: 'pointer' }}>cancel</button>
+        </div>
+        {!od ? (
+          <div style={{ fontSize: 12, color: C.muted }}>No lines available for this game yet.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {od.spread?.away && od.spread?.home && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => pick('spread', 'away', od.spread!.away!.line)} style={{ flex: 1, padding: '8px 4px', borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bgEl, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>{game.awayTeam} {od.spread.away.line}</button>
+                <button onClick={() => pick('spread', 'home', od.spread!.home!.line)} style={{ flex: 1, padding: '8px 4px', borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bgEl, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>{game.homeTeam} {od.spread.home.line}</button>
+              </div>
+            )}
+            {od.moneyline?.away && od.moneyline?.home && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => pick('moneyline', 'away', '')} style={{ flex: 1, padding: '8px 4px', borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bgEl, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>{game.awayTeam} ML {fmtOdds(parseInt(od.moneyline.away))}</button>
+                <button onClick={() => pick('moneyline', 'home', '')} style={{ flex: 1, padding: '8px 4px', borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bgEl, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>{game.homeTeam} ML {fmtOdds(parseInt(od.moneyline.home))}</button>
+              </div>
+            )}
+            {od.total?.over && od.total?.under && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => pick('over_under', 'over', od.total!.over!.line)} style={{ flex: 1, padding: '8px 4px', borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bgEl, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>O {od.total.over.line}</button>
+                <button onClick={() => pick('over_under', 'under', od.total!.under!.line)} style={{ flex: 1, padding: '8px 4px', borderRadius: 9, border: `1.5px solid ${C.border}`, background: C.bgEl, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>U {od.total.under.line}</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="Search a team for this leg..." style={{ ...inputStyle, flex: 1, marginBottom: 0 }} />
+        <button onClick={search} style={{ ...btnStyle, padding: '0 16px', fontSize: 13, flexShrink: 0 }}>{loading ? '...' : 'Search'}</button>
+      </div>
+      {searched && !loading && results.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 10, color: C.muted, fontSize: 12 }}>No games found</div>
+      )}
+      {results.length > 0 && (
+        <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden', marginTop: 8 }}>
+          {results.map((g, i) => (
+            <button key={g.id} onClick={() => setGame(g)} style={{ width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? `1px solid ${C.border}` : 'none', cursor: 'pointer' }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{g.awayTeam} @ {g.homeTeam}</div>
+              <div style={{ fontSize: 11, color: C.muted }}>{g.sport}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AddBetPage() {
   const { me, addBet } = useApp()
   const nav = useNavigate()
   const [sport, setSport] = useState<Sport>('NFL')
   const [type, setType] = useState<BetType>('spread')
   const [desc, setDesc] = useState('')
-  const [parlayLegs, setParlayLegs] = useState<string[]>(['', ''])
+  const [parlayLegs2, setParlayLegs2] = useState<ParlayLeg[]>([])
   const [spreadTeam, setSpreadTeam] = useState('')
   const [spreadLine, setSpreadLine] = useState('')
   const [spreadOpp, setSpreadOpp] = useState('')
@@ -2028,7 +2124,7 @@ function AddBetPage() {
 
   const submit = async () => {
     let finalDesc = desc
-    if (type === 'parlay') finalDesc = parlayLegs.filter(l => l.trim()).join(' + ')
+    if (type === 'parlay') finalDesc = `${parlayLegs2.length}-leg: ` + parlayLegs2.map(l => l.description).join(' + ')
     else if (type === 'spread') finalDesc = [spreadTeam, spreadLine, spreadOpp ? `vs ${spreadOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'moneyline') finalDesc = [mlTeam, 'ML', mlOpp ? `vs ${mlOpp}` : ''].filter(Boolean).join(' ')
     else if (type === 'over_under') finalDesc = [ouMatchup, ouDir, ouTotal].filter(Boolean).join(' ')
@@ -2036,6 +2132,7 @@ function AddBetPage() {
       const statLabel = (selectedGame?.sport === 'MLB' || selectedGame?.sport === 'CBB' ? PROP_STATS.baseball : PROP_STATS.basketball).find(s => s.key === propStatKey)?.label ?? propStatKey
       finalDesc = `${propPlayer.name} ${propDir} ${propLine} ${statLabel}`
     }
+    if (type === 'parlay' && parlayLegs2.length < 2) return alert('Add at least 2 legs to build a parlay.')
     if (!finalDesc || !odds || !stake) return alert('Fill in description, odds, and stake.')
 
     // If a game is linked but the pick wasn't captured via tap-to-add (e.g.
@@ -2066,6 +2163,7 @@ function AddBetPage() {
       userId: me.id, sport, type, description: finalDesc, odds: parseInt(odds), stake: parseFloat(stake), status: 'pending', bookmaker: book,
       gameId: selectedGame?.id ?? null, pickSide: finalPickSide, pickLine: finalPickLine,
       propPlayerId: finalPropPlayerId, propPlayerName: finalPropPlayerName, propStat: finalPropStat,
+      legs: type === 'parlay' ? parlayLegs2 : null,
     })
     setPosting(false)
     if (error) { alert(`Couldn't post your bet: ${error}\n\nTry again — if it keeps happening, sign out and back in.`); return }
@@ -2301,24 +2399,21 @@ function AddBetPage() {
         )}
         {type === 'parlay' && (
           <>
-            <div style={labelStyle}>Parlay Legs</div>
-            {parlayLegs.map((leg, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: C.primary, minWidth: 22 }}>#{i + 1}</div>
-                <input
-                  value={leg}
-                  onChange={e => { const next = [...parlayLegs]; next[i] = e.target.value; setParlayLegs(next) }}
-                  placeholder="e.g. Chiefs -3.5 vs Bills"
-                  style={{ ...inputStyle, flex: 1, marginBottom: 0 }}
-                />
-                {parlayLegs.length > 2 && (
-                  <button onClick={() => setParlayLegs(parlayLegs.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', padding: '0 4px' }}>×</button>
-                )}
+            <div style={labelStyle}>Parlay Legs <span style={{ color: C.primary, fontWeight: 600, fontSize: 10 }}>LIVE · ESPN · AUTO-GRADED</span></div>
+            {parlayLegs2.map((leg, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: '10px 14px', marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: C.primary, minWidth: 20 }}>#{i + 1}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{leg.description}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{leg.sport}</div>
+                </div>
+                <button onClick={() => setParlayLegs2(parlayLegs2.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', padding: '0 4px' }}>×</button>
               </div>
             ))}
-            <button onClick={() => setParlayLegs([...parlayLegs, ''])} style={{ background: C.bgEl, border: 'none', borderRadius: 10, padding: '8px 16px', fontSize: 13, fontWeight: 600, color: C.primary, cursor: 'pointer', marginTop: 2 }}>
-              + Add Leg
-            </button>
+            <ParlayLegPicker onAdd={leg => setParlayLegs2([...parlayLegs2, leg])} />
+            <div style={{ fontSize: 11, color: C.muted, marginTop: -2 }}>
+              {parlayLegs2.length < 2 ? `Add at least ${2 - parlayLegs2.length} more leg${2 - parlayLegs2.length === 1 ? '' : 's'} to build the parlay.` : 'Each leg settles from its own game — the parlay wins only if every leg hits.'}
+            </div>
           </>
         )}
         {type === 'prop' && selectedGame && PROP_CAPABLE_SPORTS.has(selectedGame.sport) ? (

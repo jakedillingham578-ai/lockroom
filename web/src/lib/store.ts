@@ -25,6 +25,18 @@ export interface Bet {
   propPlayerId?: string | null
   propPlayerName?: string | null
   propStat?: string | null
+  // Parlay: each leg linked to a real ESPN game, graded independently.
+  legs?: ParlayLeg[] | null
+}
+
+export interface ParlayLeg {
+  gameId: string
+  sport: string
+  league: string
+  type: 'spread' | 'moneyline' | 'over_under'
+  pickSide: 'home' | 'away' | 'over' | 'under'
+  pickLine: number | null
+  description: string
 }
 
 export interface AppUser {
@@ -50,6 +62,7 @@ function rowToBet(row: any): Bet {
     propPlayerId:   row.prop_player_id ?? null,
     propPlayerName: row.prop_player_name ?? null,
     propStat:       row.prop_stat ?? null,
+    legs:        row.legs ?? null,
     createdAt:   new Date(row.created_at),
     settledAt:   row.settled_at ? new Date(row.settled_at) : undefined,
   }
@@ -327,6 +340,7 @@ export async function insertBet(
     prop_player_id:   bet.propPlayerId ?? null,
     prop_player_name: bet.propPlayerName ?? null,
     prop_stat:        bet.propStat ?? null,
+    legs:             bet.legs ?? null,
   }
   const doInsert = () => supabase.from('bets').insert(row).select().single()
   let { data, error } = await doInsert()
