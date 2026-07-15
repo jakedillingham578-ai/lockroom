@@ -3753,8 +3753,8 @@ function CompetitionsPage() {
   const [activeComp, setActiveComp] = useState<string | null>(null)
 
   if (activeComp === 'bracket') return <BracketComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'pickem') return <PickemComp users={users} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'survivor') return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'pickem' && me.isPro) return <PickemComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'survivor' && me.isPro) return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
   if (activeComp === 'confidence' && me.isPro) return <ConfidencePoolComp users={users} onBack={() => setActiveComp(null)} />
   if (activeComp === 'squares' && me.isPro) return <SquaresComp users={users} onBack={() => setActiveComp(null)} />
 
@@ -3788,23 +3788,6 @@ function CompetitionsPage() {
         </div>
       </div>
 
-      {/* More games */}
-      <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>More Games</div>
-      {[
-        { icon: '🗳️', title: "Weekly Pick'em", desc: 'Everyone picks the same slate. Most correct wins.', id: 'pickem' },
-        { icon: '🏝️', title: 'Survivor Pool', desc: "Same featured game every day. Miss it, you're out.", id: 'survivor' },
-      ].map(c => (
-        <div key={c.title} onClick={() => setActiveComp(c.id)}
-          style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer' }}>
-          <div style={{ fontSize: 26, flexShrink: 0 }}>{c.icon}</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{c.title}</div>
-            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{c.desc}</div>
-          </div>
-          <div style={{ color: C.muted, fontSize: 12, fontWeight: 700 }}>Open →</div>
-        </div>
-      ))}
-
       {/* Pro games */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, marginTop: 20 }}>
         <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -3815,6 +3798,8 @@ function CompetitionsPage() {
         )}
       </div>
       {[
+        { icon: '🗳️', title: "Weekly Pick'em", desc: 'Everyone picks the same slate. Most correct wins.', id: 'pickem' },
+        { icon: '🏝️', title: 'Survivor Pool', desc: "Same featured game every day. Miss it, you're out.", id: 'survivor' },
         { icon: '🎯', title: 'Confidence Pool', desc: 'Rank your picks 1-N — your most confident call is worth the most.', id: 'confidence' },
         { icon: '🔢', title: 'Squares', desc: 'Classic 10×10 grid pool on one real game. Own a cell, win the game.', id: 'squares' },
       ].map(c => (
@@ -3841,7 +3826,7 @@ function CompetitionsPage() {
               <div style={{ fontSize: 24, fontWeight: 900 }}>Lockroom Pro</div>
               <div style={{ color: C.muted, marginTop: 4 }}>Take your group to the next level</div>
             </div>
-            {[['🎯', 'Confidence Pool — rank your picks 1-N'], ['🔢', 'Squares — classic 10×10 grid pool'], ['⚔️', 'Custom bracket round length (1-5 days)'], ['📈', 'Advanced stats: ROI charts, trend analysis']].map(([e, t]) => (
+            {[["🗳️", "Weekly Pick'em & Survivor Pool"], ['🎯', 'Confidence Pool — rank your picks 1-N'], ['🔢', 'Squares — classic 10×10 grid pool'], ['⚔️', 'Custom bracket round length (1-5 days)']].map(([e, t]) => (
               <div key={t} style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
                 <span style={{ fontSize: 18 }}>{e}</span><span style={{ fontSize: 14 }}>{t}</span>
               </div>
