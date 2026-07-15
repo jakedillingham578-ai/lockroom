@@ -195,30 +195,33 @@ export async function upsertSurvivorPick(groupId: string, userId: string, day: s
   if (!SUPABASE_READY) return
   const { error } = await supabase
     .from('survivor_picks')
-    .upsert({ group_id: groupId, user_id: userId, day, game_id: gameId, pick }, { onConflict: 'group_id,user_id,day' })
+    .upsert({ group_id: groupId, user_id: userId, day, game_id: gameId, pick }, { onConflict: 'group_id,user_id,day,game_id' })
   if (error) console.error('[store] upsertSurvivorPick:', error.message)
 }
 
-// Featured "game of the day" pinned per group — first writer wins.
-export async function fetchFeaturedGames(groupId: string): Promise<Record<string, string>> {
+export interface FeaturedDay { dayNumber: number; gameIds: string[] }
+
+// Gauntlet: day N of the pool features N games (all must hit to survive
+// that day). Pinned per group — first writer wins.
+export async function fetchFeaturedGames(groupId: string): Promise<Record<string, FeaturedDay>> {
   if (!SUPABASE_READY) return {}
   const { data, error } = await supabase
     .from('survivor_featured')
     .select('*')
     .eq('group_id', groupId)
   if (error) { console.error('[store] fetchFeaturedGames:', error.message); return {} }
-  const out: Record<string, string> = {}
-  for (const r of data ?? []) out[r.day] = r.game_id
+  const out: Record<string, FeaturedDay> = {}
+  for (const r of data ?? []) out[(r as any).day] = { dayNumber: (r as any).day_number ?? 1, gameIds: (r as any).game_ids ?? [] }
   return out
 }
 
-export async function pinFeaturedGame(groupId: string, day: string, gameId: string): Promise<void> {
+export async function pinFeaturedDay(groupId: string, day: string, dayNumber: number, gameIds: string[]): Promise<void> {
   if (!SUPABASE_READY) return
   // Ignore conflicts so the first member to pin a day wins.
   const { error } = await supabase
     .from('survivor_featured')
-    .upsert({ group_id: groupId, day, game_id: gameId }, { onConflict: 'group_id,day', ignoreDuplicates: true })
-  if (error) console.error('[store] pinFeaturedGame:', error.message)
+    .upsert({ group_id: groupId, day, day_number: dayNumber, game_ids: gameIds }, { onConflict: 'group_id,day', ignoreDuplicates: true })
+  if (error) console.error('[store] pinFeaturedDay:', error.message)
 }
 
 // ── Realtime ─────────────────────────────────────────────────

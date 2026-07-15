@@ -2901,16 +2901,20 @@ const SPORT_EMOJI: Record<string, string> = {
   NFL: '🏈', CFB: '🏈', NBA: '🏀', WNBA: '🏀', NCAAM: '🏀', NCAAW: '🏀', MLB: '⚾', CBB: '⚾', NHL: '🏒', Soccer: '⚽', MMA: '🥊', Other: '🎯',
 }
 
-// Deterministic "game of the day" — marquee sport priority, then earliest.
-// Used to pick the featured game before it's pinned server-side.
+// Deterministic "games of the day" — marquee sport priority, then earliest.
+// Used to pick the featured game(s) before they're pinned server-side.
 const SURVIVOR_SPORT_PRIORITY = ['Soccer', 'NFL', 'CFB', 'NBA', 'NHL', 'MLB', 'MMA', 'Other']
-function featuredGameOf(dayGames: import('./lib/odds').ESPNGame[]) {
+function rankGamesForFeature(dayGames: import('./lib/odds').ESPNGame[]) {
   return [...dayGames].sort((a, b) => {
     const ra = SURVIVOR_SPORT_PRIORITY.indexOf(a.sport); const rb = SURVIVOR_SPORT_PRIORITY.indexOf(b.sport)
     const pa = ra < 0 ? 99 : ra, pb = rb < 0 ? 99 : rb
     if (pa !== pb) return pa - pb
     return new Date(a.date).getTime() - new Date(b.date).getTime()
-  })[0]
+  })
+}
+// Gauntlet: day N features N games, ranked by the same marquee priority.
+function featuredGamesOf(dayGames: import('./lib/odds').ESPNGame[], n: number) {
+  return rankGamesForFeature(dayGames).slice(0, n)
 }
 
 function PickemComp({ users, onBack }: { users: User[], onBack: () => void }) {
@@ -3550,12 +3554,14 @@ function SquaresComp({ users, onBack }: { users: User[], onBack: () => void }) {
   )
 }
 
+// Gauntlet-style Survivor: day 1 features 1 game, day 2 features 2 games
+// (must go 2-for-2 to survive that day), day 3 features 3, and so on.
 function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) {
   const { groupName, me, groupId } = useApp()
   type SGame = import('./lib/odds').ESPNGame
   const [games, setGames] = useState<SGame[]>([])
   const [allPicks, setAllPicks] = useState<{ day: string; gameId: string; userId: string; pick: string }[]>([])
-  const [featured, setFeatured] = useState<Record<string, string>>({})  // day → pinned gameId
+  const [featured, setFeatured] = useState<Record<string, import('./lib/store').FeaturedDay>>({})
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
@@ -3565,17 +3571,21 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
       const picks = groupId ? await store.fetchSurvivorPicks(groupId) : []
       let feat = groupId ? await store.fetchFeaturedGames(groupId) : {}
 
-      // Pin a featured game for any day that doesn't have one yet (first writer wins).
+      // Pin any not-yet-featured days, in chronological order, assigning
+      // each the next sequential day_number (1, 2, 3...) after whatever's
+      // already pinned for this group.
       if (groupId) {
         const byDayLocal: Record<string, SGame[]> = {}
         for (const gg of g) { const k = new Date(gg.date).toLocaleDateString('en-CA'); (byDayLocal[k] ??= []).push(gg) }
-        const missing = Object.keys(byDayLocal).filter(d => !feat[d])
-        if (missing.length) {
-          await Promise.all(missing.map(d => {
-            const fg = featuredGameOf(byDayLocal[d])
-            return fg ? store.pinFeaturedGame(groupId, d, fg.id) : Promise.resolve()
-          }))
-          feat = await store.fetchFeaturedGames(groupId)  // re-read whoever won the race
+        const missingDays = Object.keys(byDayLocal).filter(d => !feat[d]).sort()
+        if (missingDays.length) {
+          let nextDayNumber = Math.max(0, ...Object.values(feat).map(f => f.dayNumber)) + 1
+          for (const d of missingDays) {
+            const picks_ = featuredGamesOf(byDayLocal[d], nextDayNumber)
+            if (picks_.length) await store.pinFeaturedDay(groupId, d, nextDayNumber, picks_.map(x => x.id))
+            nextDayNumber++
+          }
+          feat = await store.fetchFeaturedGames(groupId) // re-read whoever won the race
         }
       }
 
@@ -3591,7 +3601,6 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
 
   useEffect(() => { load() }, [load])
 
-  const dayKey = (iso: string) => new Date(iso).toLocaleDateString('en-CA')
   const dayLabel = (key: string) => new Date(key + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
   const winnerOf = (g: SGame): string | null => {
     if (!g.completed || g.homeScore == null || g.awayScore == null) return null
@@ -3599,33 +3608,35 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
     return g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam
   }
 
-  // Group games by day
-  const byDay: Record<string, SGame[]> = {}
-  for (const g of games) { const k = dayKey(g.date); (byDay[k] ??= []).push(g) }
-  const days = Object.keys(byDay).sort()
+  // Days in chronological (day_number) order, each with its featured games.
+  const days = Object.keys(featured).sort((a, b) => featured[a].dayNumber - featured[b].dayNumber)
+  const gamesForDay = (day: string): SGame[] => (featured[day]?.gameIds ?? []).map(id => games.find(g => g.id === id)).filter((g): g is SGame => !!g)
 
-  // My picks by day
-  const myPickByDay: Record<string, { gameId: string; pick: string }> = {}
-  allPicks.filter(p => p.userId === me.id).forEach(p => { myPickByDay[p.day] = { gameId: p.gameId, pick: p.pick } })
+  const myPickFor = (day: string, gameId: string) => allPicks.find(p => p.userId === me.id && p.day === day && p.gameId === gameId)
 
-  // The featured game for a day: prefer the server-pinned id (authoritative for
-  // the whole group), fall back to the deterministic local choice.
-  const featuredForDay = (day: string): SGame | undefined => {
-    const pinnedId = featured[day]
-    if (pinnedId) { const g = games.find(x => x.id === pinnedId); if (g) return g }
-    return featuredGameOf(byDay[day])
+  const makePick = async (day: string, g: SGame, team: string) => {
+    if (!amAlive || g.completed || g.inProgress) return
+    setAllPicks(prev => [...prev.filter(p => !(p.userId === me.id && p.day === day && p.gameId === g.id)), { day, gameId: g.id, userId: me.id, pick: team }])
+    if (groupId) {
+      const { upsertSurvivorPick } = await import('./lib/store')
+      await upsertSurvivorPick(groupId, me.id, day, g.id, team)
+    }
   }
 
-  // Alive/eliminated status: walk each user's picks in day order; a completed
-  // pick that didn't win (loss OR draw) knocks them out.
+  // Alive/eliminated: walk days in order; a day only counts once ALL of its
+  // featured games are final. Missing a pick, or any wrong pick, eliminates
+  // you that day — you must go N-for-N to survive day N.
   const statusOf = (uid: string): { alive: boolean; outDay?: string } => {
-    const picks = allPicks.filter(p => p.userId === uid).sort((a, b) => a.day.localeCompare(b.day))
-    for (const p of picks) {
-      const g = games.find(x => x.id === p.gameId)
-      if (g && g.completed) {
+    for (const day of days) {
+      const dayGames = gamesForDay(day)
+      if (dayGames.length === 0) continue
+      if (!dayGames.every(g => g.completed)) break // day still in progress — stop here
+      const allCorrect = dayGames.every(g => {
+        const p = allPicks.find(x => x.userId === uid && x.day === day && x.gameId === g.id)
         const w = winnerOf(g)
-        if (w !== p.pick) return { alive: false, outDay: p.day }
-      }
+        return p && w && w !== 'DRAW' && w === p.pick
+      })
+      if (!allCorrect) return { alive: false, outDay: day }
     }
     return { alive: true }
   }
@@ -3635,20 +3646,11 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
   const outList = roster.filter(r => !r.alive)
   const amAlive = statusOf(me.id).alive
 
-  const makePick = async (day: string, g: SGame, team: string) => {
-    if (!amAlive || g.completed || g.inProgress) return
-    setAllPicks(prev => [...prev.filter(p => !(p.userId === me.id && p.day === day)), { day, gameId: g.id, userId: me.id, pick: team }])
-    if (groupId) {
-      const { upsertSurvivorPick } = await import('./lib/store')
-      await upsertSurvivorPick(groupId, me.id, day, g.id, team)
-    }
-  }
-
   return (
     <div>
       <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, fontSize: 14, cursor: 'pointer', marginBottom: 16, padding: 0 }}>← Back</button>
       <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4 }}>Survivor Pool</h2>
-      <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>{groupName} · Same game every day · Guess the winner · Miss and you're out</p>
+      <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>{groupName} · Day N features N games — miss one and you're out</p>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
         <div style={{ flex: 1, background: C.winBg, border: `1px solid ${C.win}`, borderRadius: 12, padding: '12px', textAlign: 'center' }}>
@@ -3674,61 +3676,73 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
         </div>
       )}
 
-      {/* One featured game per day */}
+      {/* Day N features N games — all must hit */}
       {days.map(day => {
-        const g = featuredForDay(day)
-        if (!g) return null
-        const myPick = myPickByDay[day]
-        const w = winnerOf(g)
-        const locked = g.completed || g.inProgress
-        const survived = g.completed && myPick ? w === myPick.pick : null
-        const others = allPicks.filter(p => p.gameId === g.id && p.userId !== me.id)
+        const dayGames = gamesForDay(day)
+        if (dayGames.length === 0) return null
+        const dayNumber = featured[day].dayNumber
+        const myPicksToday = dayGames.map(g => myPickFor(day, g.id))
+        const madeCount = myPicksToday.filter(Boolean).length
+        const allFinal = dayGames.every(g => g.completed)
+        const allCorrect = allFinal && dayGames.every(g => {
+          const p = myPickFor(day, g.id)
+          const w = winnerOf(g)
+          return p && w && w !== 'DRAW' && w === p.pick
+        })
+
         return (
-          <div key={day} style={{ marginBottom: 16 }}>
-            <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{dayLabel(day)}</div>
-            <div style={{ background: C.bgCard, border: `1.5px solid ${myPick ? C.primary : C.border}`, borderRadius: 14, padding: '12px 14px' }}>
-              {/* Matchup header */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 }}>
-                <span style={{ fontSize: 14 }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.muted }}>{g.sport}</span>
-                <span style={{ fontSize: 11, color: C.muted }}>·</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: g.completed ? C.muted : g.inProgress ? C.loss : C.muted }}>
-                  {g.completed ? 'FINAL' : g.inProgress ? '🔴 LIVE' : new Date(g.date).toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + new Date(g.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                </span>
-              </div>
-              {/* Two winner buttons */}
-              <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
-                {[g.awayTeam, g.homeTeam].map((team, ti) => {
-                  const isPicked = myPick?.pick === team
-                  const isWinner = g.completed && w === team
-                  const disabled = locked || !amAlive
-                  return (
-                    <React.Fragment key={team}>
-                      <button onClick={() => makePick(day, g, team)} disabled={disabled} style={{
-                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '12px 8px', borderRadius: 11,
-                        border: `2px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
-                        background: isWinner ? C.winBg : isPicked ? C.primaryBg : C.bgEl,
-                        cursor: disabled ? 'default' : 'pointer',
-                      }}>
-                        <span style={{ fontSize: 13, fontWeight: 900, color: isWinner ? C.win : isPicked ? C.primary : C.text, textAlign: 'center' }}>{team}</span>
-                        {g.completed
-                          ? <span style={{ fontSize: 16, fontWeight: 900, color: isWinner ? C.win : C.muted }}>{team === g.homeTeam ? g.homeScore : g.awayScore}</span>
-                          : isPicked ? <span style={{ fontSize: 11, color: C.primary, fontWeight: 700 }}>✓ your pick</span> : <span style={{ fontSize: 11, color: C.muted }}>tap to pick</span>}
-                      </button>
-                      {ti === 0 && <div style={{ display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 900, color: C.muted }}>@</div>}
-                    </React.Fragment>
-                  )
-                })}
-              </div>
-              {/* Result / group pick count */}
-              {survived !== null ? (
-                <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, textAlign: 'center', color: survived ? C.win : C.loss }}>
-                  {survived ? `✓ You survived` : myPick ? `✗ ${myPick.pick} didn't win — eliminated` : '— you had no pick'}
-                </div>
-              ) : others.length > 0 && (
-                <div style={{ marginTop: 10, fontSize: 11, color: C.muted, textAlign: 'center' }}>{others.length} other {others.length === 1 ? 'member has' : 'members have'} picked</div>
-              )}
+          <div key={day} style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>Day {dayNumber} · {dayLabel(day)}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.primary }}>{madeCount}/{dayGames.length} picked</div>
             </div>
+
+            {dayGames.map(g => {
+              const myPick = myPickFor(day, g.id)
+              const w = winnerOf(g)
+              const locked = g.completed || g.inProgress
+              return (
+                <div key={g.id} style={{ background: C.bgCard, border: `1.5px solid ${myPick ? C.primary : C.border}`, borderRadius: 14, padding: '12px 14px', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 }}>
+                    <span style={{ fontSize: 14 }}>{SPORT_EMOJI[g.sport] ?? '🎯'}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.muted }}>{g.sport}</span>
+                    <span style={{ fontSize: 11, color: C.muted }}>·</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: g.completed ? C.muted : g.inProgress ? C.loss : C.muted }}>
+                      {g.completed ? 'FINAL' : g.inProgress ? '🔴 LIVE' : new Date(g.date).toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + new Date(g.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
+                    {[g.awayTeam, g.homeTeam].map((team, ti) => {
+                      const isPicked = myPick?.pick === team
+                      const isWinner = g.completed && w === team
+                      const disabled = locked || !amAlive
+                      return (
+                        <React.Fragment key={team}>
+                          <button onClick={() => makePick(day, g, team)} disabled={disabled} style={{
+                            flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '10px 8px', borderRadius: 11,
+                            border: `2px solid ${isWinner ? C.win : isPicked ? C.primary : C.border}`,
+                            background: isWinner ? C.winBg : isPicked ? C.primaryBg : C.bgEl,
+                            cursor: disabled ? 'default' : 'pointer',
+                          }}>
+                            <span style={{ fontSize: 13, fontWeight: 900, color: isWinner ? C.win : isPicked ? C.primary : C.text, textAlign: 'center' }}>{team}</span>
+                            {g.completed
+                              ? <span style={{ fontSize: 15, fontWeight: 900, color: isWinner ? C.win : C.muted }}>{team === g.homeTeam ? g.homeScore : g.awayScore}</span>
+                              : isPicked ? <span style={{ fontSize: 11, color: C.primary, fontWeight: 700 }}>✓ your pick</span> : <span style={{ fontSize: 11, color: C.muted }}>tap to pick</span>}
+                          </button>
+                          {ti === 0 && <div style={{ display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 900, color: C.muted }}>@</div>}
+                        </React.Fragment>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+
+            {allFinal && (
+              <div style={{ fontSize: 12, fontWeight: 700, textAlign: 'center', color: allCorrect ? C.win : C.loss, marginTop: -4 }}>
+                {allCorrect ? `✓ Day ${dayNumber} survived (${dayGames.length}-for-${dayGames.length})` : `✗ Missed a pick on Day ${dayNumber} — eliminated`}
+              </div>
+            )}
           </div>
         )
       })}
