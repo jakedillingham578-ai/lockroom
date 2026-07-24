@@ -3913,33 +3913,50 @@ function CompetitionsPage() {
         </div>
       ))}
 
-      {/* Pro modal */}
+      {/* Pro modal — Lockroom-branded, dark navy to match the logo/waitlist */}
       {showModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'flex-end', zIndex: 100 }} onClick={() => setShowModal(false)}>
-          <div style={{ background: C.bgCard, borderRadius: '28px 28px 0 0', padding: 28, paddingBottom: 40, width: '100%', maxWidth: 500, margin: '0 auto' }} onClick={e => e.stopPropagation()}>
-            <div style={{ textAlign: 'center', marginBottom: 20 }}>
-              <div style={{ fontSize: 48 }}>⭐</div>
-              <div style={{ fontSize: 24, fontWeight: 900 }}>Lockroom Pro</div>
-              <div style={{ color: C.muted, marginTop: 4 }}>Take your group to the next level</div>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'flex-end', zIndex: 100 }} onClick={() => setShowModal(false)}>
+          <div style={{ background: '#0a1929', borderRadius: '28px 28px 0 0', padding: '28px 24px', paddingBottom: 36, width: '100%', maxWidth: 500, margin: '0 auto', border: '1px solid rgba(75,156,211,0.25)', borderBottom: 'none' }} onClick={e => e.stopPropagation()}>
+            <div style={{ textAlign: 'center', marginBottom: 22 }}>
+              <div style={{ width: 56, height: 56, borderRadius: 16, background: 'linear-gradient(135deg,#1e5f8e,#4B9CD3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', boxShadow: '0 6px 20px rgba(75,156,211,0.35)' }}>
+                <span style={{ fontSize: 26 }}>🔒</span>
+              </div>
+              <div style={{ display: 'inline-block', background: 'rgba(180,131,9,0.15)', border: '1px solid rgba(217,168,6,0.4)', borderRadius: 20, padding: '3px 12px', color: '#D9A806', fontSize: 10, fontWeight: 800, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 10 }}>
+                Group Upgrade
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 900, color: '#fff', letterSpacing: -0.5 }}>Lockroom Pro</div>
+              <div style={{ color: '#6b8299', fontSize: 13, marginTop: 4 }}>One subscription unlocks it for your whole group</div>
             </div>
-            {[["🗳️", "Weekly Pick'em & Survivor Pool"], ['🎯', 'Confidence Pool — rank your picks 1-N'], ['🔢', 'Squares — classic 10×10 grid pool'], ['⚔️', 'Custom bracket round length (1-5 days)']].map(([e, t]) => (
-              <div key={t} style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-                <span style={{ fontSize: 18 }}>{e}</span><span style={{ fontSize: 14 }}>{t}</span>
+
+            {[
+              ['🗳️', "Weekly Pick'em & Survivor Pool", 'Real games, real grading, no manual clicking'],
+              ['🎯', 'Confidence Pool', 'Rank picks 1-N — your riskiest call pays the most'],
+              ['🔢', 'Squares', 'Classic 10×10 grid pool on any real game'],
+              ['⚔️', 'Custom Bracket Rounds', 'Pick 1-5 day rounds instead of the fixed default'],
+            ].map(([icon, title, desc]) => (
+              <div key={title} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 14 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(75,156,211,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 16 }}>{icon}</div>
+                <div>
+                  <div style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>{title}</div>
+                  <div style={{ color: '#5a7a90', fontSize: 12, marginTop: 1, lineHeight: 1.4 }}>{desc}</div>
+                </div>
               </div>
             ))}
-            <div style={{ display: 'flex', gap: 10, margin: '20px 0' }}>
+
+            <div style={{ display: 'flex', gap: 10, margin: '22px 0 16px' }}>
               {[['$4.99', '/month', false, 'monthly'], ['$39.99', '/year', true, 'yearly']].map(([price, period, best, plan]) => (
                 <button key={period as string} onClick={() => startCheckout(plan as 'monthly' | 'yearly')} style={{
-                  flex: 1, padding: '14px 0', borderRadius: 14, border: `1px solid ${best ? C.gold : C.border}`,
-                  background: best ? C.goldBg : C.bgEl, cursor: 'pointer', color: C.text,
+                  flex: 1, padding: '16px 0', borderRadius: 14, cursor: 'pointer', textAlign: 'center',
+                  border: `1.5px solid ${best ? '#D9A806' : 'rgba(75,156,211,0.3)'}`,
+                  background: best ? 'rgba(180,131,9,0.12)' : 'rgba(75,156,211,0.08)',
                 }}>
-                  {best && <div style={{ color: C.bg, background: C.gold, fontSize: 8, fontWeight: 900, letterSpacing: 0.5, borderRadius: 99, padding: '1px 8px', display: 'inline-block', marginBottom: 4 }}>BEST VALUE</div>}
-                  <div style={{ color: best ? C.gold : C.text, fontSize: 22, fontWeight: 900 }}>{price as string}</div>
-                  <div style={{ color: C.muted, fontSize: 12 }}>{period as string}</div>
+                  {best && <div style={{ color: '#0a1929', background: '#D9A806', fontSize: 8, fontWeight: 900, letterSpacing: 0.5, borderRadius: 99, padding: '2px 9px', display: 'inline-block', marginBottom: 6 }}>BEST VALUE</div>}
+                  <div style={{ color: best ? '#D9A806' : '#fff', fontSize: 22, fontWeight: 900 }}>{price as string}</div>
+                  <div style={{ color: '#5a7a90', fontSize: 12, marginTop: 1 }}>{period as string} · whole group</div>
                 </button>
               ))}
             </div>
-            <button onClick={() => setShowModal(false)} style={{ width: '100%', background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', padding: '10px 0' }}>Not now</button>
+            <button onClick={() => setShowModal(false)} style={{ width: '100%', background: 'transparent', border: 'none', color: '#5a7a90', cursor: 'pointer', padding: '8px 0', fontSize: 13 }}>Not now</button>
           </div>
         </div>
       )}
