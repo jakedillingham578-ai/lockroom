@@ -7,13 +7,13 @@ const supabase = createClient(process.env.VITE_SUPABASE_URL!, process.env.SUPABA
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
-  const { userId, origin } = req.body ?? {}
-  if (!userId) return res.status(400).json({ error: 'Missing userId' })
+  const { groupId, origin } = req.body ?? {}
+  if (!groupId) return res.status(400).json({ error: 'Missing groupId' })
 
   try {
-    const { data: profile } = await supabase.from('profiles').select('stripe_customer_id').eq('id', userId).single()
-    const customerId = (profile as any)?.stripe_customer_id
-    if (!customerId) return res.status(400).json({ error: 'No Stripe customer on file for this user' })
+    const { data: group } = await supabase.from('groups').select('stripe_customer_id').eq('id', groupId).single()
+    const customerId = (group as any)?.stripe_customer_id
+    if (!customerId) return res.status(400).json({ error: 'No Stripe customer on file for this group' })
 
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,

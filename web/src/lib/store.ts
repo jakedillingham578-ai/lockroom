@@ -272,7 +272,7 @@ export async function setDisplayName(name: string): Promise<void> {
   await supabase.from('profiles').update({ display_name: name, name_confirmed: true }).eq('id', uid)
 }
 
-export async function fetchMyGroups(): Promise<{ id: string; name: string; code: string }[]> {
+export async function fetchMyGroups(): Promise<{ id: string; name: string; code: string; isPro: boolean }[]> {
   if (!SUPABASE_READY) return []
   const { data: { session } } = await supabase.auth.getSession()
   const uid = session?.user?.id
@@ -285,7 +285,13 @@ export async function fetchMyGroups(): Promise<{ id: string; name: string; code:
   return (data ?? [])
     .map((r: any) => r.groups)
     .filter(Boolean)
-    .map((g: any) => ({ id: g.id, name: g.name, code: g.code }))
+    .map((g: any) => ({ id: g.id, name: g.name, code: g.code, isPro: !!g.is_pro }))
+}
+
+export async function fetchGroupProStatus(groupId: string): Promise<boolean> {
+  if (!SUPABASE_READY) return false
+  const { data } = await supabase.from('groups').select('is_pro').eq('id', groupId).maybeSingle()
+  return !!(data as any)?.is_pro
 }
 
 export async function leaveGroupMembership(groupId: string, userId: string): Promise<boolean> {

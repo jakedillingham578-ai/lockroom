@@ -30,24 +30,27 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
+    // Pro is a group-level unlock — client_reference_id carries the group
+    // id (see create-checkout-session), so a subscription sponsors every
+    // member of that group, not just whoever paid.
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object as Stripe.Checkout.Session
-      const userId = session.client_reference_id
+      const groupId = session.client_reference_id
       const customerId = session.customer as string
       const subscriptionId = session.subscription as string
-      if (userId) {
-        await supabase.from('profiles').update({
+      if (groupId) {
+        await supabase.from('groups').update({
           is_pro: true,
           stripe_customer_id: customerId,
           stripe_subscription_id: subscriptionId,
-        }).eq('id', userId)
+        }).eq('id', groupId)
       }
     }
 
     if (event.type === 'customer.subscription.deleted' || event.type === 'customer.subscription.updated') {
       const sub = event.data.object as Stripe.Subscription
       const active = sub.status === 'active' || sub.status === 'trialing'
-      await supabase.from('profiles').update({ is_pro: active }).eq('stripe_subscription_id', sub.id)
+      await supabase.from('groups').update({ is_pro: active }).eq('stripe_subscription_id', sub.id)
     }
 
     res.status(200).json({ received: true })

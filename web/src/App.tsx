@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup, type ParlayLeg } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, fetchGroupProStatus, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup, type ParlayLeg } from './lib/store'
 import { PROP_CAPABLE_SPORTS, PROP_STATS } from './lib/odds'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
@@ -139,7 +139,7 @@ const SEED_BETS: Bet[] = [
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 interface Ctx {
-  me: User; users: User[]; bets: Bet[]; groupCode: string; groupName: string; groupId: string | null
+  me: User; users: User[]; bets: Bet[]; groupCode: string; groupName: string; groupId: string | null; groupIsPro: boolean
   myGroups: { id: string; name: string; code: string }[]
   switchGroup: (id: string) => void
   openAddGroup: () => void
@@ -381,6 +381,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   const [groupId, setGroupId] = useState<string | null>(null)
   const [groupName, setGroupName] = useState('My Group')
   const [groupCode, setGroupCode] = useState('')
+  const [groupIsPro, setGroupIsPro] = useState(false)
   const [loading, setLoading] = useState(SUPABASE_READY)
   const [needsGroup, setNeedsGroup] = useState(false)
   const [addingGroup, setAddingGroup] = useState(false)
@@ -506,6 +507,15 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     return () => { unsub(); window.removeEventListener('focus', refetch); clearInterval(poll) }
   }, [groupId, loadGroup])
 
+  // Pro is a group-level unlock — keep it in sync whenever the active
+  // group changes.
+  useEffect(() => {
+    if (!groupId || !SUPABASE_READY) { setGroupIsPro(false); return }
+    let cancelled = false
+    fetchGroupProStatus(groupId).then(pro => { if (!cancelled) setGroupIsPro(pro) })
+    return () => { cancelled = true }
+  }, [groupId])
+
   // After a Stripe checkout redirect, is_pro may take a moment to flip via
   // the webhook — poll briefly instead of relying on a single refetch.
   useEffect(() => {
@@ -515,16 +525,18 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     let attempts = 0
     const poll = async () => {
       if (cancelled) return
-      await loadGroup(groupId)
+      const pro = await fetchGroupProStatus(groupId)
+      if (cancelled) return
+      setGroupIsPro(pro)
       attempts++
-      if (attempts < 6) setTimeout(poll, 1500)
+      if (!pro && attempts < 6) setTimeout(poll, 1500)
     }
     poll()
     const url = new URL(window.location.href)
     url.searchParams.delete('pro')
     window.history.replaceState({}, '', url.toString())
     return () => { cancelled = true }
-  }, [groupId, loadGroup])
+  }, [groupId])
 
   // Auto-settle: for bets linked to a real game, check ESPN scores and mark
   // won/lost/push automatically. Runs on load and every 2 minutes.
@@ -618,11 +630,12 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   }, [groupId, loadGroup])
 
   const startCheckout = useCallback(async (plan: 'monthly' | 'yearly') => {
-    if (!myId) return
+    if (!myId || !groupId) return
+    if (groupIsPro) { alert('Your group is already Pro!'); return }
     try {
       const res = await fetch('/api/create-checkout-session', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: myId, plan, origin: window.location.origin }),
+        body: JSON.stringify({ userId: myId, groupId, plan, origin: window.location.origin }),
       })
       const data = await res.json()
       if (data.url) window.location.href = data.url
@@ -630,14 +643,14 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     } catch (e) {
       alert('Could not start checkout. Try again.')
     }
-  }, [myId])
+  }, [myId, groupId, groupIsPro])
 
   const openBillingPortal = useCallback(async () => {
-    if (!myId) return
+    if (!groupId) return
     try {
       const res = await fetch('/api/create-portal-session', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: myId, origin: window.location.origin }),
+        body: JSON.stringify({ groupId, origin: window.location.origin }),
       })
       const data = await res.json()
       if (data.url) window.location.href = data.url
@@ -645,7 +658,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     } catch (e) {
       alert('Could not open billing portal.')
     }
-  }, [myId])
+  }, [groupId])
 
   const reactToBet = useCallback(async (betId: string, emoji: ReactionEmoji) => {
     // optimistic toggle
@@ -681,7 +694,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   if (addingGroup) return <GroupSetupPage onGroup={handleGroupReady} onCancel={() => setAddingGroup(false)} />
 
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, leaveGroup, addBet, settleBet, getUserById, startCheckout, openBillingPortal, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, groupIsPro, myGroups, switchGroup, openAddGroup, leaveGroup, addBet, settleBet, getUserById, startCheckout, openBillingPortal, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
         <ErrorBoundary>{children}</ErrorBoundary>
       </div>
@@ -1335,7 +1348,7 @@ function HomePage() {
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 function LeaderboardPage() {
-  const { me, users, bets, startCheckout, groupName } = useApp()
+  const { me, users, bets, startCheckout, groupIsPro, groupName } = useApp()
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const [showUpgrade, setShowUpgrade] = useState(false)
 
@@ -1446,7 +1459,7 @@ function LeaderboardPage() {
           <h1 style={{ fontSize: 26, fontWeight: 900 }}>Board 🏆</h1>
           <p style={{ color: C.muted, fontSize: 13 }}>{groupName}</p>
         </div>
-        {!me.isPro
+        {!groupIsPro
           ? <button onClick={() => setShowUpgrade(true)} style={{ background: 'linear-gradient(135deg,#B45309,#D97706)', border: 'none', borderRadius: 99, padding: '7px 14px', cursor: 'pointer', color: '#fff', fontWeight: 800, fontSize: 12 }}>⚡ Go Pro</button>
           : <div style={{ background: C.goldBg, border: `1px solid ${C.gold}`, borderRadius: 99, padding: '5px 12px' }}><span style={{ fontSize: 12, color: C.gold, fontWeight: 800 }}>⭐ PRO</span></div>
         }
@@ -1535,7 +1548,7 @@ function LeaderboardPage() {
 
       {/* Pro analytics section */}
       <div style={{ marginTop: 28 }}>
-        {me.isPro ? (
+        {groupIsPro ? (
           <ProAnalytics sorted={sorted} periodBets={periodBets} users={users} periodLabel={periodLabel[period]} />
         ) : (
           <div style={{ background: C.bgCard, border: `1.5px dashed ${C.borderL}`, borderRadius: 18, padding: '24px 20px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
@@ -2602,7 +2615,7 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, users, groupCode, groupName, startCheckout, openBillingPortal, signOut, darkMode, toggleDark, leaveGroup } = useApp()
+  const { me, bets, users, groupCode, groupName, groupIsPro, startCheckout, openBillingPortal, signOut, darkMode, toggleDark, leaveGroup } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
   const [copied, setCopied] = useState(false)
   const [confirmLeave, setConfirmLeave] = useState(false)
@@ -2631,7 +2644,7 @@ function ProfilePage() {
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 22, fontWeight: 900 }}>{me.displayName}</span>
-            {me.isPro && <span style={{ background: C.goldBg, color: C.gold, fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 99, border: `1px solid ${C.gold}` }}>⭐ PRO</span>}
+            {groupIsPro && <span style={{ background: C.goldBg, color: C.gold, fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 99, border: `1px solid ${C.gold}` }}>⭐ PRO</span>}
           </div>
           <div style={{ color: C.muted, fontSize: 13 }}>@{me.username}</div>
         </div>
@@ -2688,7 +2701,7 @@ function ProfilePage() {
         </div>
       )}
 
-      {!me.isPro ? (
+      {!groupIsPro ? (
         <button onClick={() => startCheckout('monthly')} style={{ width: '100%', background: C.goldBg, border: `1px solid ${C.gold}`, borderRadius: 14, padding: '12px 16px', marginBottom: 20, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: C.text }}>
           <div style={{ textAlign: 'left' }}>
             <div style={{ color: C.gold, fontWeight: 800, fontSize: 15 }}>⭐ Upgrade to Pro</div>
@@ -2754,7 +2767,7 @@ function ProfilePage() {
           <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, marginBottom: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <span style={{ fontWeight: 700 }}>This Week's P&L</span>
-              {!me.isPro && <span style={{ color: C.gold, fontSize: 11, fontWeight: 600 }}>📈 More charts in Pro</span>}
+              {!groupIsPro && <span style={{ color: C.gold, fontSize: 11, fontWeight: 600 }}>📈 More charts in Pro</span>}
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-end', height: 80, gap: 4 }}>
               {stats.weeklyPnl.map((v, i) => {
@@ -2782,7 +2795,7 @@ function ProfilePage() {
 // ─── Competition Detail Views ─────────────────────────────────────────────────
 
 function BracketComp({ users, bets, onBack }: { users: User[], bets: Bet[], onBack: () => void }) {
-  const { me, groupName, groupId } = useApp()
+  const { me, groupName, groupId, groupIsPro } = useApp()
   const [state, setState] = useState<import('./lib/bracket').BracketState | null>(null)
   const [lastChampion, setLastChampion] = useState<{ championId: string; completedAt: string } | null>(null)
   const [loading, setLoading] = useState(true)
@@ -2881,7 +2894,7 @@ function BracketComp({ users, bets, onBack }: { users: User[], bets: Bet[], onBa
           <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
             Everyone in {groupName} gets seeded by their real profit over the last 7 days. Each round, matchups are decided by whoever has the better real betting profit during that window — lose your matchup, you're out.
           </div>
-          {me.isPro && (
+          {groupIsPro && (
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: 'uppercase', marginBottom: 6 }}>Round length (Pro)</div>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -3831,15 +3844,15 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
 
 // ─── Competitions ─────────────────────────────────────────────────────────────
 function CompetitionsPage() {
-  const { me, users, bets, startCheckout, groupName } = useApp()
+  const { users, bets, startCheckout, groupIsPro, groupName } = useApp()
   const [showModal, setShowModal] = useState(false)
   const [activeComp, setActiveComp] = useState<string | null>(null)
 
   if (activeComp === 'bracket') return <BracketComp users={users} bets={bets} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'pickem' && me.isPro) return <PickemComp users={users} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'survivor' && me.isPro) return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'confidence' && me.isPro) return <ConfidencePoolComp users={users} onBack={() => setActiveComp(null)} />
-  if (activeComp === 'squares' && me.isPro) return <SquaresComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'pickem' && groupIsPro) return <PickemComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'survivor' && groupIsPro) return <SurvivorComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'confidence' && groupIsPro) return <ConfidencePoolComp users={users} onBack={() => setActiveComp(null)} />
+  if (activeComp === 'squares' && groupIsPro) return <SquaresComp users={users} onBack={() => setActiveComp(null)} />
 
   return (
     <div>
@@ -3848,7 +3861,7 @@ function CompetitionsPage() {
           <h1 style={{ fontSize: 26, fontWeight: 900 }}>Competitions</h1>
           <p style={{ color: C.muted, fontSize: 13 }}>{groupName}</p>
         </div>
-        {!me.isPro && (
+        {!groupIsPro && (
           <button onClick={() => setShowModal(true)} style={{ background: C.goldBg, border: `1px solid ${C.gold}`, color: C.gold, padding: '7px 14px', borderRadius: 10, cursor: 'pointer', fontWeight: 800, fontSize: 12 }}>⭐ Go Pro</button>
         )}
       </div>
@@ -3874,9 +3887,9 @@ function CompetitionsPage() {
       {/* Pro games */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, marginTop: 20 }}>
         <div style={{ color: C.muted, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-          {me.isPro ? 'Pro Games' : 'Pro Games 🔒'}
+          {groupIsPro ? 'Pro Games' : 'Pro Games 🔒'}
         </div>
-        {!me.isPro && (
+        {!groupIsPro && (
           <button onClick={() => setShowModal(true)} style={{ background: C.goldBg, border: `1px solid ${C.gold}`, color: C.gold, padding: '4px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 11 }}>Upgrade</button>
         )}
       </div>
@@ -3886,14 +3899,14 @@ function CompetitionsPage() {
         { icon: '🎯', title: 'Confidence Pool', desc: 'Rank your picks 1-N — your most confident call is worth the most.', id: 'confidence' },
         { icon: '🔢', title: 'Squares', desc: 'Classic 10×10 grid pool on one real game. Own a cell, win the game.', id: 'squares' },
       ].map(c => (
-        <div key={c.title} onClick={() => me.isPro ? setActiveComp(c.id) : setShowModal(true)}
-          style={{ background: C.bgCard, border: `1px solid ${me.isPro ? C.gold : C.border}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer', opacity: me.isPro ? 1 : 0.6 }}>
+        <div key={c.title} onClick={() => groupIsPro ? setActiveComp(c.id) : setShowModal(true)}
+          style={{ background: C.bgCard, border: `1px solid ${groupIsPro ? C.gold : C.border}`, borderRadius: 14, padding: '14px 16px', marginBottom: 10, display: 'flex', gap: 14, alignItems: 'center', cursor: 'pointer', opacity: groupIsPro ? 1 : 0.6 }}>
           <div style={{ fontSize: 26, flexShrink: 0 }}>{c.icon}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>{c.title}</div>
             <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{c.desc}</div>
           </div>
-          {me.isPro
+          {groupIsPro
             ? <div style={{ color: C.gold, fontSize: 12, fontWeight: 700 }}>Open →</div>
             : <div style={{ color: C.gold, fontSize: 13, fontWeight: 800 }}>🔒</div>
           }
