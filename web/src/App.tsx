@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
-import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, updateProfile, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup, type ParlayLeg } from './lib/store'
+import { SUPABASE_READY, fetchGroupBets, fetchGroupMembers, fetchMyGroups, fetchLastGroup, setLastGroup, leaveGroupMembership, ensureMyProfile, setDisplayName, insertBet, updateBetStatus, fetchReactions, toggleReaction, fetchComments, insertComment, subscribeToGroup, type ParlayLeg } from './lib/store'
 import { PROP_CAPABLE_SPORTS, PROP_STATS } from './lib/odds'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
@@ -147,7 +147,8 @@ interface Ctx {
   addBet: (b: Omit<Bet, 'id' | 'createdAt'>) => Promise<string | null>
   settleBet: (id: string, s: 'won' | 'lost' | 'push') => void
   getUserById: (id: string) => User | undefined
-  upgradePro: () => void
+  startCheckout: (plan: 'monthly' | 'yearly') => Promise<void>
+  openBillingPortal: () => Promise<void>
   signOut: () => void
   reactToBet: (betId: string, emoji: ReactionEmoji) => void
   commentOnBet: (betId: string, text: string) => void
@@ -505,6 +506,26 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     return () => { unsub(); window.removeEventListener('focus', refetch); clearInterval(poll) }
   }, [groupId, loadGroup])
 
+  // After a Stripe checkout redirect, is_pro may take a moment to flip via
+  // the webhook — poll briefly instead of relying on a single refetch.
+  useEffect(() => {
+    if (!groupId || !SUPABASE_READY) return
+    if (!window.location.search.includes('pro=success')) return
+    let cancelled = false
+    let attempts = 0
+    const poll = async () => {
+      if (cancelled) return
+      await loadGroup(groupId)
+      attempts++
+      if (attempts < 6) setTimeout(poll, 1500)
+    }
+    poll()
+    const url = new URL(window.location.href)
+    url.searchParams.delete('pro')
+    window.history.replaceState({}, '', url.toString())
+    return () => { cancelled = true }
+  }, [groupId, loadGroup])
+
   // Auto-settle: for bets linked to a real game, check ESPN scores and mark
   // won/lost/push automatically. Runs on load and every 2 minutes.
   useEffect(() => {
@@ -596,9 +617,34 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
     }
   }, [groupId, loadGroup])
 
-  const upgradePro = useCallback(async () => {
-    setUsers(prev => prev.map(u => u.id === myId ? { ...u, isPro: true } : u))
-    if (SUPABASE_READY && myId) await updateProfile(myId, { is_pro: true })
+  const startCheckout = useCallback(async (plan: 'monthly' | 'yearly') => {
+    if (!myId) return
+    try {
+      const res = await fetch('/api/create-checkout-session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: myId, plan, origin: window.location.origin }),
+      })
+      const data = await res.json()
+      if (data.url) window.location.href = data.url
+      else alert(data.error ?? 'Could not start checkout. Try again.')
+    } catch (e) {
+      alert('Could not start checkout. Try again.')
+    }
+  }, [myId])
+
+  const openBillingPortal = useCallback(async () => {
+    if (!myId) return
+    try {
+      const res = await fetch('/api/create-portal-session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: myId, origin: window.location.origin }),
+      })
+      const data = await res.json()
+      if (data.url) window.location.href = data.url
+      else alert(data.error ?? 'Could not open billing portal.')
+    } catch (e) {
+      alert('Could not open billing portal.')
+    }
   }, [myId])
 
   const reactToBet = useCallback(async (betId: string, emoji: ReactionEmoji) => {
@@ -635,7 +681,7 @@ function AppProvider({ children, onSignOut }: { children: React.ReactNode; onSig
   if (addingGroup) return <GroupSetupPage onGroup={handleGroupReady} onCancel={() => setAddingGroup(false)} />
 
   return (
-    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, leaveGroup, addBet, settleBet, getUserById, upgradePro, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
+    <AppCtx.Provider value={{ me, users, bets, groupCode, groupName, groupId, myGroups, switchGroup, openAddGroup, leaveGroup, addBet, settleBet, getUserById, startCheckout, openBillingPortal, signOut: onSignOut, reactToBet, commentOnBet, darkMode, toggleDark }}>
       <div style={{ filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none', minHeight: '100vh' }}>
         <ErrorBoundary>{children}</ErrorBoundary>
       </div>
@@ -1289,7 +1335,7 @@ function HomePage() {
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 function LeaderboardPage() {
-  const { me, users, bets, upgradePro, groupName } = useApp()
+  const { me, users, bets, startCheckout, groupName } = useApp()
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('weekly')
   const [showUpgrade, setShowUpgrade] = useState(false)
 
@@ -1382,7 +1428,7 @@ function LeaderboardPage() {
                 </div>
               </div>
             ))}
-            <button onClick={() => { upgradePro(); setShowUpgrade(false) }} style={{
+            <button onClick={() => { startCheckout('monthly'); setShowUpgrade(false) }} style={{
               ...btnStyle, width: '100%', padding: '15px 0', marginTop: 8, fontSize: 16, fontWeight: 900,
               background: 'linear-gradient(135deg, #B45309, #D97706)',
             }}>
@@ -2556,7 +2602,7 @@ function ChipRow({ label, options, value, onChange }: { label: string; options: 
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { me, bets, users, groupCode, groupName, upgradePro, signOut, darkMode, toggleDark, leaveGroup } = useApp()
+  const { me, bets, users, groupCode, groupName, startCheckout, openBillingPortal, signOut, darkMode, toggleDark, leaveGroup } = useApp()
   const [tab, setTab] = useState<'stats' | 'history'>('stats')
   const [copied, setCopied] = useState(false)
   const [confirmLeave, setConfirmLeave] = useState(false)
@@ -2642,13 +2688,21 @@ function ProfilePage() {
         </div>
       )}
 
-      {!me.isPro && (
-        <button onClick={upgradePro} style={{ width: '100%', background: C.goldBg, border: `1px solid ${C.gold}`, borderRadius: 14, padding: '12px 16px', marginBottom: 20, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: C.text }}>
+      {!me.isPro ? (
+        <button onClick={() => startCheckout('monthly')} style={{ width: '100%', background: C.goldBg, border: `1px solid ${C.gold}`, borderRadius: 14, padding: '12px 16px', marginBottom: 20, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: C.text }}>
           <div style={{ textAlign: 'left' }}>
             <div style={{ color: C.gold, fontWeight: 800, fontSize: 15 }}>⭐ Upgrade to Pro</div>
             <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>Advanced charts, custom competitions & more</div>
           </div>
           <span style={{ color: C.gold, fontSize: 18 }}>→</span>
+        </button>
+      ) : (
+        <button onClick={openBillingPortal} style={{ width: '100%', background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '12px 16px', marginBottom: 20, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: C.text }}>
+          <div style={{ textAlign: 'left' }}>
+            <div style={{ color: C.gold, fontWeight: 800, fontSize: 15 }}>⭐ Manage Subscription</div>
+            <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>Update card, view invoices, or cancel</div>
+          </div>
+          <span style={{ color: C.muted, fontSize: 18 }}>→</span>
         </button>
       )}
 
@@ -3777,7 +3831,7 @@ function SurvivorComp({ users, onBack }: { users: User[], onBack: () => void }) 
 
 // ─── Competitions ─────────────────────────────────────────────────────────────
 function CompetitionsPage() {
-  const { me, users, bets, upgradePro, groupName } = useApp()
+  const { me, users, bets, startCheckout, groupName } = useApp()
   const [showModal, setShowModal] = useState(false)
   const [activeComp, setActiveComp] = useState<string | null>(null)
 
@@ -3861,8 +3915,8 @@ function CompetitionsPage() {
               </div>
             ))}
             <div style={{ display: 'flex', gap: 10, margin: '20px 0' }}>
-              {[['$4.99', '/month', false], ['$39.99', '/year', true]].map(([price, period, best]) => (
-                <button key={period as string} onClick={() => { upgradePro(); setShowModal(false); alert('⭐ Welcome to Pro!') }} style={{
+              {[['$4.99', '/month', false, 'monthly'], ['$39.99', '/year', true, 'yearly']].map(([price, period, best, plan]) => (
+                <button key={period as string} onClick={() => startCheckout(plan as 'monthly' | 'yearly')} style={{
                   flex: 1, padding: '14px 0', borderRadius: 14, border: `1px solid ${best ? C.gold : C.border}`,
                   background: best ? C.goldBg : C.bgEl, cursor: 'pointer', color: C.text,
                 }}>
